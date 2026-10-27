@@ -1,0 +1,11 @@
+{
+  "desktopTerminal": {
+    "startupShell": "cmd",
+    "customShellPath": ""
+  },
+  "defaultMode": "bypassPermissions",
+  "maxConcurrentSubagents": null,
+  "language": "chinese",
+  "outputStyle": "Explanatory",
+  "effort": "medium"
+}

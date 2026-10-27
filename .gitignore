@@ -1,0 +1,26 @@
+# 本地 provider / 密钥 / 运行态
+cc-haha/
+.claude.json
+.env
+.env.*
+*.pem
+*.key
+*.p12
+.wf/
+backups/
+projects/
+sessions/
+plans/
+logs/
+*.log
+
+# Python
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# OS / editor
+.DS_Store
+Thumbs.db

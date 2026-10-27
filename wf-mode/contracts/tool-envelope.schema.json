@@ -1,0 +1,101 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://wf.local/schemas/tool-envelope.schema.json",
+  "title": "wf-tool 统一信封",
+  "description": "所有适配器和核心槽返回给调用方的唯一外层结构。管线只依赖这个结构，不依赖具体 provider。",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["ok", "slot", "action", "adapter", "data", "error", "degradation", "meta"],
+  "properties": {
+    "ok": {
+      "type": "boolean",
+      "description": "动作是否成功。false 时 error 必须非空。"
+    },
+    "slot": {
+      "type": "string",
+      "minLength": 1,
+      "description": "能力槽名称，例如 web_search、web_extract、project_search、ledger。"
+    },
+    "action": {
+      "type": "string",
+      "minLength": 1,
+      "description": "槽动作，例如 search、extract、lookup、commit。"
+    },
+    "adapter": {
+      "type": "string",
+      "minLength": 1,
+      "description": "实际执行的适配器或 provider；失败时为最后尝试的 provider。"
+    },
+    "data": {
+      "description": "成功时的归一化数据。各槽在 TOOL.md 中定义字段。"
+    },
+    "error": {
+      "oneOf": [
+        { "type": "null" },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["code", "message", "retryable"],
+          "properties": {
+            "code": {
+              "type": "string",
+              "enum": [
+                "AUTH_MISSING",
+                "AUTH_FAILED",
+                "INVALID_INPUT",
+                "UNKNOWN_SLOT",
+                "UNKNOWN_ACTION",
+                "TIMEOUT",
+                "RATE_LIMIT",
+                "UPSTREAM_ERROR",
+                "FALLBACK_EXHAUSTED",
+                "NOT_IMPLEMENTED",
+                "GATE_REJECTED",
+                "LEDGER_INVALID",
+                "INTERNAL"
+              ]
+            },
+            "message": { "type": "string", "minLength": 1 },
+            "retryable": { "type": "boolean" },
+            "details": { "type": "object" }
+          }
+        }
+      ]
+    },
+    "degradation": {
+      "type": "array",
+      "description": "主备切换记录；没有降级时为空数组。",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["slot", "from", "to", "reason"],
+        "properties": {
+          "slot": { "type": "string", "minLength": 1 },
+          "from": { "type": "string", "minLength": 1 },
+          "to": { "type": "string", "minLength": 1 },
+          "reason": { "type": "string" }
+        }
+      }
+    },
+    "meta": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["ms"],
+      "properties": {
+        "ms": { "type": "number", "minimum": 0 },
+        "runId": { "type": "string" },
+        "checkedAt": { "type": "string" }
+      }
+    }
+  },
+  "allOf": [
+    {
+      "if": { "properties": { "ok": { "const": false } }, "required": ["ok"] },
+      "then": { "properties": { "error": { "type": "object" } } }
+    },
+    {
+      "if": { "properties": { "ok": { "const": true } }, "required": ["ok"] },
+      "then": { "properties": { "error": { "type": "null" } } }
+    }
+  ]
+}

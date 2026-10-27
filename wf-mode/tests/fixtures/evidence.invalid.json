@@ -1,0 +1,14 @@
+{
+  "pipeline": "wf-retrieval",
+  "items": [
+    {
+      "id": "E1",
+      "statement": "没有来源却声称已核实",
+      "status": "verified",
+      "sources": [],
+      "note": ""
+    }
+  ],
+  "limitations": [],
+  "gaps": []
+}

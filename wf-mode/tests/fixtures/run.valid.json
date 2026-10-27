@@ -1,0 +1,7 @@
+{
+  "pipeline": "wf-retrieval",
+  "status": "complete",
+  "degradation": [],
+  "startedAt": "2026-10-27T00:00:00Z",
+  "finishedAt": "2026-10-27T00:00:05Z"
+}

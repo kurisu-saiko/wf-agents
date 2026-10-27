@@ -1,0 +1,34 @@
+slot: web_search
+version: "0.1.0"
+license: commercial-api
+os:
+  - windows
+  - linux
+  - macos
+actions:
+  - search
+  - health
+providers:
+  tavily:
+    role: primary
+    env:
+      - TAVILY_API_KEY
+      - TAVILY
+    endpoint: https://api.tavily.com/search
+  exa:
+    role: alternate
+    env:
+      - EXA_API_KEY
+      - EXA
+    endpoint: https://api.exa.ai/search
+credentials:
+  - TAVILY_API_KEY
+  - TAVILY
+  - EXA_API_KEY
+  - EXA
+writeSurface: []
+timeoutMs: 20000
+retry:
+  max: 1
+  backoffMs: 300
+notes: 只做认证、调用、字段归一化；搜索摘要不能当证据。

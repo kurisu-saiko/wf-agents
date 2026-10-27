@@ -1,0 +1,48 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://wf.local/schemas/run.schema.json",
+  "title": "运行元数据",
+  "description": "一次管线运行的元数据；只记录状态、降级、工具数量与 gates 结果，不存网页原文。",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["pipeline", "status", "degradation", "startedAt", "finishedAt"],
+  "properties": {
+    "pipeline": { "type": "string", "minLength": 1 },
+    "status": { "type": "string", "enum": ["complete", "partial", "blocked"] },
+    "degradation": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["slot", "level", "reason"],
+        "properties": {
+          "slot": { "type": "string", "minLength": 1 },
+          "level": { "type": "integer", "minimum": 1, "maximum": 4 },
+          "reason": { "type": "string" }
+        }
+      }
+    },
+    "startedAt": { "type": "string" },
+    "finishedAt": { "type": "string" },
+    "toolCount": { "type": "integer", "minimum": 0 },
+    "gateResults": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["gate", "ok"],
+        "properties": {
+          "gate": { "type": "string", "minLength": 1 },
+          "ok": { "type": "boolean" },
+          "code": { "type": "string" },
+          "message": { "type": "string" }
+        }
+      }
+    },
+    "promptBlocks": {
+      "type": "array",
+      "items": { "type": "string" }
+    },
+    "runId": { "type": "string" }
+  }
+}

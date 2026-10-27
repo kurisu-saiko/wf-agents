@@ -1,0 +1,34 @@
+slot: web_extract
+version: "0.1.0"
+license: commercial-api
+os:
+  - windows
+  - linux
+  - macos
+actions:
+  - extract
+  - health
+providers:
+  firecrawl:
+    role: primary
+    env:
+      - FIRECRAWL_API_KEY
+      - FIRECRAWL
+    endpoint: https://api.firecrawl.dev/v1/scrape
+  jina:
+    role: alternate
+    env:
+      - JINA_API_KEY
+      - JINA
+    endpoint: https://r.jina.ai/
+credentials:
+  - FIRECRAWL_API_KEY
+  - FIRECRAWL
+  - JINA_API_KEY
+  - JINA
+writeSurface: []
+timeoutMs: 30000
+retry:
+  max: 1
+  backoffMs: 300
+notes: Jina 可无密钥使用；Firecrawl 无密钥时自动降级到 Jina。

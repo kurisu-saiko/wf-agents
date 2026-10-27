@@ -1,0 +1,29 @@
+slot: project_search
+version: "0.1.0"
+license: GitHub-API-Terms
+os:
+  - windows
+  - linux
+  - macos
+actions:
+  - search
+  - lookup
+  - health
+providers:
+  github:
+    role: primary
+    env:
+      - GITHUB_TOKEN
+      - GH_TOKEN
+      - GITHUB_MCP_TOKEN
+    endpoint: https://api.github.com
+credentials:
+  - GITHUB_TOKEN
+  - GH_TOKEN
+  - GITHUB_MCP_TOKEN
+writeSurface: []
+timeoutMs: 20000
+retry:
+  max: 1
+  backoffMs: 300
+notes: GitHub 公共 API 无 token 也可用，令牌只提高限流额度。

@@ -1,0 +1,15 @@
+{
+  "ok": true,
+  "slot": "web_search",
+  "action": "search",
+  "adapter": "tavily",
+  "data": {
+    "query": "searxng",
+    "results": []
+  },
+  "error": null,
+  "degradation": [],
+  "meta": {
+    "ms": 12.5
+  }
+}

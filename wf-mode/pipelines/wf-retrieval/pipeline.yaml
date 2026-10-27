@@ -1,0 +1,30 @@
+# wf-retrieval/verify 工序单（Phase 1）
+# 只声明事实：用哪些槽、至少几个工具、过哪些 gates、产出哪些账本文件。
+id: wf-retrieval
+mode: verify
+description: 检索取证。搜索来源、抓取正文、写三文件账本、过证据与来源层级 gates。
+minTools: 2
+slots:
+  - slot: web_search
+    actions:
+      - search
+    required: true
+  - slot: web_extract
+    actions:
+      - extract
+    required: true
+promptBlocks:
+  - core.md
+  - domain/retrieval.md
+  - output/retrieval.md
+  - tools/web_search.md
+  - tools/web_extract.md
+gates:
+  - evidence
+  - source-tier
+  - ledger
+  - prompt
+outputs:
+  - run.json
+  - evidence.json
+  - result.md

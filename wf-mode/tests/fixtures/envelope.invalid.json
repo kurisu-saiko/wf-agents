@@ -1,0 +1,16 @@
+{
+  "ok": true,
+  "slot": "web_search",
+  "action": "search",
+  "adapter": "tavily",
+  "data": {},
+  "error": {
+    "code": "AUTH_MISSING",
+    "message": "ok=true 时 error 必须为 null",
+    "retryable": false
+  },
+  "degradation": [],
+  "meta": {
+    "ms": 1
+  }
+}
