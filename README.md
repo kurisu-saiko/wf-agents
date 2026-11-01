@@ -1,13 +1,12 @@
 # wf-agents
 
-wf-mode 工作流的协作用仓库。当前包含 Phase 1 内核、3 个 Tier 1 适配器、`wf-retrieval/verify` 管线与集成测试。
+wf-mode 工作流的协作用仓库。`/wf` 现在在主会话内执行，带两道人工闸口（需求确认、方案确认），全程只读。
 
 ## 目录
 
 ```text
-wf-mode/                实际工作流资产（agents、workflows、contracts、tools、pipelines、tests）
-docs/                   计划、第一阶段记录、历史交接说明
-docs/HANDOFF-v1.md      历史交接文档；当前权威契约以 wf-mode/contracts/ 为准
+wf-mode/                 实际插件源码（commands、agent、host、hooks、tools、panel、contracts、tests）
+wf-mode/README.md        使用说明、协议阶段、安装与测试
 ```
 
 ## 快速开始
@@ -16,19 +15,26 @@ docs/HANDOFF-v1.md      历史交接文档；当前权威契约以 wf-mode/contr
 cd wf-mode
 python -m pytest tests/integration -q
 python tools/wf-tool.py list
-python tools/wf-tool.py health
+python tools/wf-tool.py doctor
+```
+
+`/wf <任务>` 的流程：
+
+```text
+能力校准 -> 需求卡 -> 闸口 1（需求确认） -> 调研/方案 -> 闸口 2（方案确认） -> 只读报告
 ```
 
 ## 当前边界
 
-- 只实现 1 条管线：`wf-retrieval/verify`；
-- 只实现 3 个能力槽：`web_search`、`web_extract`、`project_search`；
-- `ledger` / `render_prompt` / `gates` 目前是 `tools/mocks/` 占位，真实模块交付后放到 `tools/` 即可替换；
-- 不包含 `cc-haha`、`.claude.json`、`backups`、`sessions`、`projects`、`.wf/runs`、任何密钥。
+- 主流程在主会话内执行，不依赖 sidecar；
+- 两道闸口：需求确认、方案确认；
+- 全程只读：不写文件、不装依赖、不部署；
+- sidecar 仅作为可选研究后端（`host/launcher.py --mode agent`）；
+- 不包含 `.claude.json`、`cc-haha/`、`runtime/`、`legacy/`、`projects/`、`telemetry/`、`backups/`、生成物与任何密钥。
 
 ## 协作约定
 
-- `wf-mode/contracts/` 是契约唯一真相源；
-- 接口改动先提 `CHANGE-REQUEST.md`，确认后再实现；
-- 外部开发者从 `wf-mode/` 开始，不要改 `wf-mode/credential` 相关本地配置；
+- `wf-mode/commands/wf.md` 定义入口协议与闸口；
+- `wf-mode/agent/wf-agent.md` 是可选研究后端提示词；`agents/wf-agent.md` 是生成物，不要手改；
+- `wf-mode/contracts/` 是能力/信封契约的唯一真相源；
 - 提交前跑 `python -m pytest tests/integration -q`。
