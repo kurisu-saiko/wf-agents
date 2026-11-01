@@ -2,23 +2,46 @@
 
 一个可插拔的 agent + 能力面板。核心目标：**用社区已有项目和工具解决问题，不造轮子。**
 
-agent 只读：不写文件、不装依赖、不部署。
+`/wf` 在主会话内执行：调研、工具调用与阶段输出实时可见；执行前有两道人工闸口；全程只读，不写文件、不装依赖、不部署。
+
+## 工作方式
+
+`/wf <任务>` 按以下阶段推进：
+
+1. **能力校准**：运行 `wf-tool doctor` / `list`，确认哪些能力真实可用。
+2. **需求理解**：生成需求卡（成品形态、Must/Should、边界与非目标、验收标准、未知项）。
+3. **闸口 1：需求确认**。用户确认需求卡后才开始候选调研。
+4. **调研与方案**：候选对比、许可证与维护证据、装配步骤、需求覆盖表。
+5. **闸口 2：方案确认**。用户确认方案后才输出最终报告。
+6. **只读交付**：输出报告，并明确“本次未落盘”。
+
+sidecar 不再承担主流程，只作为可选研究后端：
+
+```bash
+python host/launcher.py --mode agent --task "..."
+```
+
+主会话模式下，工具调用与文字会随阶段自然显示。可选后端在设置 `WF_STREAM_PARTIAL=1` 时可以逐块转发 assistant 文本。
 
 ## 结构
 
 ```text
 wf-mode/
 ├ capabilities.yaml          能力目录（16 项，active/pending）
-├ agent/wf-agent.md          唯一 agent 提示词（{{WF_ROOT}} 占位）
-├ hooks/wf_agent_gate.py     agent 级权限闸门
+├ agent/wf-agent.md          可选研究后端提示词（{{WF_ROOT}} 占位）
+├ agents/wf-agent.md         渲染生成物（gitignore）
+├ commands/wf.md             /wf 主会话协议与两道闸口
+├ hooks/wf_agent_gate.py     研究后端权限闸门
 ├ tools/
 │   ├ wf-tool.py             唯一能力入口（list/health/doctor/call）
 │   └ adapters/              web_search / web_extract / project_search / cli_tool
 ├ panel/                     Streamlit 能力面板
 ├ host/                      宿主适配：haha / claude / dsh + launcher + install
-├ commands/wf.md             指令入口源
+├ tests/                     集成测试（协议、流式、权限、能力）
 ├ install.ps1                最小安装器
-└ contracts/                 能力目录、适配器、信封 schema
+├ contracts/                 能力目录、适配器、信封 schema
+├ runtime/                   宿主规则生成物（gitignore）
+└ legacy/                    旧实现归档（gitignore）
 ```
 
 ## 快速开始
@@ -29,13 +52,14 @@ wf-mode/
 /wf 找一个可用的开源 X 项目并给出采用方案
 ```
 
-直接调用：
+直接调用能力：
 
 ```bash
 python tools/wf-tool.py list
 python tools/wf-tool.py doctor
 python tools/wf-tool.py call project_search search --query "searxng" --maxResults 5
 python tools/wf-tool.py call web_search search --query "..." --maxResults 5
+python tools/wf-tool.py call web_extract extract --url "https://..."
 python tools/wf-tool.py call repo_ingest ingest --repo "owner/name"
 python tools/wf-tool.py call structural_search search --pattern "def $A($$$)" --lang python --path .
 python tools/wf-tool.py call dependency_graph graph --path .
@@ -43,11 +67,17 @@ python tools/wf-tool.py call package_security scan --path .
 python tools/wf-tool.py call license_sbom scan --path .
 ```
 
-启动器：
+启动器（可选研究后端）：
 
 ```bash
 python host/launcher.py --list-hosts
 python host/launcher.py --task "找一个可用的开源 X 项目并给出采用方案" --host auto
+```
+
+显式直连模式（不经过 agent）：
+
+```bash
+python host/launcher.py --task "查看当前仓库结构" --mode direct
 ```
 
 面板：
@@ -59,6 +89,14 @@ streamlit run panel/app.py --server.headless true
 ```
 
 面板四块：提示词、装配工具、API 接入、状态测试。启停只写 `panel/state.json`；停用的能力会拒绝调用。
+
+## 人工闸口与只读边界
+
+- 两道闸口都由 `AskUserQuestion` 实现：需求确认、方案确认；用户明确确认前不推进。
+- `AskUserQuestion` 不可用时，降级为纯文本提问并停止本轮，不自动继续。
+- 不授予 `Write/Edit/MultiEdit/NotebookEdit`；`Bash` 只用于 `wf-tool.py` 与可选的 `launcher.py --mode agent`。
+- 不使用 `launcher.py` 的 `--mode direct` / `--mode auto` 自动分流。
+- 外部能力只通过 `wf-tool call` 调用；GitHub 只使用只读 MCP 工具。
 
 ## 能力目录
 
@@ -102,13 +140,24 @@ streamlit run panel/app.py --server.headless true
 
 # 写入 agent、入口与 settings deny Workflow
 .\install.ps1 -HostName haha -ConfigDir "D:/claude-code/data" -Apply
+
+# 同步 dsh 规则文件
+.\install.ps1 -HostName dsh -Apply
 ```
 
 安装器只写声明的路径，写入前备份；不复制宿主配置、会话、凭据。
 
+## 开发与测试
+
+```bash
+python -m pytest tests/integration -q
+```
+
+测试覆盖：协议闸口与只读约束、流式解析、权限闸门、能力目录、缓存与降级。
+
 ## 开源边界
 
-不包含：`.claude.json`、`cc-haha/`、`sessions/`、`projects/`、`telemetry/`、`backups/`、任何密钥或 OAuth 配置。
+不包含：`.claude.json`、`cc-haha/`、`sessions/`、`projects/`、`telemetry/`、`backups/`、`runtime/`、`legacy/`、`plans/`、生成物、任何密钥或 OAuth 配置。
 
 ## 能力真实状态
 
