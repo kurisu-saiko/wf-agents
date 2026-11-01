@@ -1,0 +1,71 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "capability.schema.json",
+  "title": "wf capability catalog",
+  "type": "object",
+  "required": ["version", "runtime", "capabilities"],
+  "properties": {
+    "version": { "type": "integer" },
+    "runtime": {
+      "type": "object",
+      "required": ["bin", "venv"],
+      "properties": {
+        "bin": { "type": "string" },
+        "venv": { "type": "string" }
+      },
+      "additionalProperties": false
+    },
+    "capabilities": {
+      "type": "object",
+      "minProperties": 1,
+      "additionalProperties": { "$ref": "#/$defs/capability" }
+    }
+  },
+  "additionalProperties": false,
+  "$defs": {
+    "capability": {
+      "type": "object",
+      "required": ["label", "kind", "actions", "providers", "primary", "status"],
+      "properties": {
+        "label": { "type": "string" },
+        "kind": { "enum": ["adapter", "cli", "mcp", "pending"] },
+        "actions": {
+          "type": "array",
+          "items": { "type": "string" },
+          "minItems": 1
+        },
+        "providers": {
+          "type": "array",
+          "items": { "type": "string" },
+          "minItems": 1
+        },
+        "primary": { "type": "string" },
+        "alternate": { "type": ["string", "null"] },
+        "fallback": {
+          "type": "array",
+          "items": { "type": "string" }
+        },
+        "env": {
+          "type": "array",
+          "items": { "type": "string" }
+        },
+        "status": { "enum": ["active", "pending", "missing"] },
+        "notes": { "type": "string" },
+        "exec": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "array",
+            "items": { "type": "string" },
+            "minItems": 1
+          }
+        },
+        "mcp_server": { "type": "string" },
+        "mcp_tools": {
+          "type": "array",
+          "items": { "type": "string" }
+        }
+      },
+      "additionalProperties": false
+    }
+  }
+}

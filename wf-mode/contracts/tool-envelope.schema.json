@@ -84,7 +84,8 @@
       "properties": {
         "ms": { "type": "number", "minimum": 0 },
         "runId": { "type": "string" },
-        "checkedAt": { "type": "string" }
+        "checkedAt": { "type": "string" },
+        "cached": { "type": "boolean" }
       }
     }
   },

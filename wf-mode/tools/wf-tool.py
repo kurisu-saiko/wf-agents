@@ -1,14 +1,13 @@
-"""wf-tool：所有能力调用的唯一入口。
+"""wf-tool：能力调用的唯一入口。
 
 用法：
   python tools/wf-tool.py list
-  python tools/wf-tool.py health [slot]
-  python tools/wf-tool.py web_search search --query "..." --max-results 5
-  python tools/wf-tool.py web_extract extract --url "https://..."
-  python tools/wf-tool.py project_search search --query "searxng"
-  python tools/wf-tool.py ledger commit --run-dir ".wf/runs/r1" --json "{...}"
+  python tools/wf-tool.py health [capability]
+  python tools/wf-tool.py doctor
+  python tools/wf-tool.py call <capability> <action> [--key value | --json "{...}"]
+  python tools/wf-tool.py panel
 
-返回值永远是统一信封；退出码 0=动作成功，1=动作失败。
+返回值永远是统一信封；退出码 0=成功，1=失败。
 """
 
 from __future__ import annotations
@@ -16,7 +15,8 @@ from __future__ import annotations
 import importlib
 import json
 import os
-import re
+import shutil
+import subprocess
 import sys
 import time
 from pathlib import Path
@@ -29,26 +29,20 @@ if str(ROOT) not in sys.path:
 import yaml  # noqa: E402
 
 from tools.errors import ToolError  # noqa: E402
-from tools.util import utc_now  # noqa: E402
+from tools.util import first_env, utc_now  # noqa: E402
 
 CONTRACTS = ROOT / "contracts"
-DEFAULT_REGISTRY = ROOT / "registry.yaml"
-CORE_SLOTS = {"ledger", "render_prompt", "gates"}
-BUILTIN_MODULES = {
-    "ledger": ("tools.ledger", "tools.mocks.ledger"),
-    "render_prompt": ("tools.render_prompt", "tools.mocks.render_prompt"),
-    "gates": ("tools.gates", "tools.mocks.gates"),
-}
+DEFAULT_CATALOG = ROOT / "capabilities.yaml"
+DISABLED_STATE = ROOT / "panel" / "state.json"
 MODULE_CACHE: dict[str, Any] = {}
 
 NUMERIC_KEYS = {"maxResults", "max_results"}
-KEY_ALIASES = {
-    "max-results": "maxResults",
-    "max_results": "maxResults",
-    "run-dir": "run_dir",
-    "prompt-blocks": "promptBlocks",
-    "blocks-root": "blocksRoot",
-}
+KEY_ALIASES = {"max-results": "maxResults", "max_results": "maxResults"}
+
+HAHA_SIDECAR = (
+    "D:/claude-code/gui/Claude Code Haha/resources/app.asar.unpacked/"
+    "src-tauri/binaries/claude-sidecar-x86_64-pc-windows-msvc.exe"
+)
 
 
 def _load_schema(name: str) -> dict[str, Any]:
@@ -71,83 +65,103 @@ def _validate(obj: Any, schema_name: str) -> None:
         )
 
 
-def load_registry(path: str | Path | None = None) -> dict[str, Any]:
-    registry_path = Path(path or os.environ.get("WF_REGISTRY") or DEFAULT_REGISTRY)
+def load_catalog(path: str | Path | None = None) -> dict[str, Any]:
+    catalog_path = Path(path or os.environ.get("WF_CATALOG") or DEFAULT_CATALOG)
     try:
-        data = yaml.safe_load(registry_path.read_text(encoding="utf-8"))
+        data = yaml.safe_load(catalog_path.read_text(encoding="utf-8"))
     except FileNotFoundError as exc:
-        raise ToolError("INTERNAL", f"registry 不存在: {registry_path}") from exc
+        raise ToolError("INTERNAL", f"能力目录不存在: {catalog_path}") from exc
     except yaml.YAMLError as exc:
-        raise ToolError("INTERNAL", "registry.yaml 不是合法 YAML") from exc
+        raise ToolError("INTERNAL", "capabilities.yaml 不是合法 YAML") from exc
     if not isinstance(data, dict):
-        raise ToolError("INTERNAL", "registry.yaml 顶层必须是对象")
-    _validate(data, "registry.schema.json")
+        raise ToolError("INTERNAL", "capabilities.yaml 顶层必须是对象")
+    _validate(data, "capability.schema.json")
+    for name, entry in (data.get("capabilities") or {}).items():
+        providers = entry.get("providers") or []
+        primary = entry.get("primary")
+        if primary not in providers:
+            raise ToolError(
+                "INTERNAL",
+                f"{name} 的 primary 不在 providers 中",
+                details={"primary": primary, "providers": providers},
+            )
     return data
 
 
-def load_manifest(slot: str) -> dict[str, Any]:
-    path = ROOT / "tools" / "adapters" / slot / "manifest.yaml"
+def load_manifest(capability: str) -> dict[str, Any]:
+    path = ROOT / "tools" / "adapters" / capability / "manifest.yaml"
     if not path.is_file():
-        raise ToolError("UNKNOWN_SLOT", f"适配器 manifest 不存在: {slot}")
+        raise ToolError("UNKNOWN_CAPABILITY", f"适配器 manifest 不存在: {capability}")
     try:
         data = yaml.safe_load(path.read_text(encoding="utf-8"))
     except yaml.YAMLError as exc:
-        raise ToolError("INTERNAL", f"{slot} manifest 不是合法 YAML") from exc
+        raise ToolError("INTERNAL", f"{capability} manifest 不是合法 YAML") from exc
     if not isinstance(data, dict):
-        raise ToolError("INTERNAL", f"{slot} manifest 顶层必须是对象")
+        raise ToolError("INTERNAL", f"{capability} manifest 顶层必须是对象")
     _validate(data, "adapter-manifest.schema.json")
     return data
 
 
-def _load_adapter(slot: str) -> Any:
-    key = f"adapter:{slot}"
+def _load_adapter(capability: str) -> Any:
+    key = f"adapter:{capability}"
     if key in MODULE_CACHE:
         return MODULE_CACHE[key]
     try:
-        module = importlib.import_module(f"tools.adapters.{slot}.adapter")
+        module = importlib.import_module(f"tools.adapters.{capability}.adapter")
     except ModuleNotFoundError as exc:
-        raise ToolError("UNKNOWN_SLOT", f"没有适配器: {slot}") from exc
+        raise ToolError("UNKNOWN_CAPABILITY", f"没有适配器: {capability}") from exc
     MODULE_CACHE[key] = module
     return module
 
 
-def _load_core(slot: str) -> Any:
-    key = f"core:{slot}"
+def _load_cli_tool() -> Any:
+    key = "cli_tool"
     if key in MODULE_CACHE:
         return MODULE_CACHE[key]
-    last_missing: str | None = None
-    for module_name in BUILTIN_MODULES[slot]:
-        try:
-            module = importlib.import_module(module_name)
-            MODULE_CACHE[key] = module
-            return module
-        except ModuleNotFoundError as exc:
-            last_missing = module_name
-            if exc.name != module_name:
-                raise
-    raise ToolError("INTERNAL", f"核心槽模块缺失: {last_missing}")
+    module = importlib.import_module("tools.adapters.cli_tool")
+    MODULE_CACHE[key] = module
+    return module
+
+
+def _disabled() -> set[str]:
+    try:
+        data = json.loads(DISABLED_STATE.read_text(encoding="utf-8"))
+    except (FileNotFoundError, ValueError):
+        return set()
+    values = data.get("disabled") if isinstance(data, dict) else None
+    if not isinstance(values, list):
+        return set()
+    return {str(v) for v in values}
+
+
+def _runtime(catalog: dict[str, Any]) -> dict[str, str]:
+    runtime = catalog.get("runtime") or {}
+    return {
+        "bin": str(os.environ.get("WF_BIN") or runtime.get("bin") or ""),
+        "venv": str(os.environ.get("WF_VENV") or runtime.get("venv") or ""),
+    }
 
 
 def _envelope(
     *,
     ok: bool,
-    slot: str,
+    capability: str,
     action: str,
-    adapter: str,
+    provider: str,
     data: Any = None,
     error: dict[str, Any] | None = None,
     degradation: list[dict[str, Any]] | None = None,
     started: float,
-    run_id: str | None = None,
+    cached: bool | None = None,
 ) -> dict[str, Any]:
     meta: dict[str, Any] = {"ms": round((time.perf_counter() - started) * 1000, 1)}
-    if run_id:
-        meta["runId"] = run_id
+    if cached is not None:
+        meta["cached"] = bool(cached)
     return {
         "ok": ok,
-        "slot": slot,
+        "capability": capability,
         "action": action,
-        "adapter": adapter,
+        "provider": provider,
         "data": data,
         "error": error,
         "degradation": degradation or [],
@@ -163,87 +177,140 @@ def _provider_chain(entry: dict[str, Any]) -> list[str]:
     return providers
 
 
+def _run_provider(
+    kind: str,
+    capability: str,
+    entry: dict[str, Any],
+    action: str,
+    payload: dict[str, Any],
+    provider: str,
+    runtime: dict[str, str],
+) -> dict[str, Any]:
+    if kind == "adapter":
+        module = _load_adapter(capability)
+        return module.execute(action, payload, provider=provider)
+    if kind == "cli":
+        return _load_cli_tool().execute(action, payload, provider, entry, runtime)
+    raise ToolError("INTERNAL", f"未知能力类型: {kind}")
+
+
+def _mcp_data(entry: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "kind": "mcp",
+        "server": entry.get("mcp_server"),
+        "tools": entry.get("mcp_tools") or [],
+        "note": "由宿主 MCP 提供；实际调用由 agent 直接使用对应 MCP 工具，wf-tool 只报告接入状态。",
+    }
+
+
 def dispatch(
-    slot: str,
+    capability: str,
     action: str,
     payload: dict[str, Any] | None = None,
     *,
-    run_id: str | None = None,
-    registry: dict[str, Any] | None = None,
+    catalog: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     started = time.perf_counter()
-    payload = payload or {}
-    registry = registry or load_registry()
+    payload = dict(payload or {})
+    forced_provider = payload.pop("provider", None)
+    catalog = catalog or load_catalog()
+    entries = catalog.get("capabilities") or {}
+    entry = entries.get(capability)
 
-    if slot in CORE_SLOTS:
-        module = _load_core(slot)
-        try:
-            data = module.handle(action, payload)
-        except ToolError as exc:
-            return _envelope(
-                ok=False,
-                slot=slot,
-                action=action,
-                adapter="internal",
-                error=exc.to_dict(),
-                started=started,
-                run_id=run_id,
-            )
-        return _envelope(
-            ok=True,
-            slot=slot,
-            action=action,
-            adapter="internal",
-            data=data,
-            started=started,
-            run_id=run_id,
-        )
-
-    slots = registry.get("slots") or {}
-    entry = slots.get(slot)
     if not isinstance(entry, dict):
         return _envelope(
             ok=False,
-            slot=slot,
+            capability=capability,
             action=action,
-            adapter="-",
+            provider="-",
             error=ToolError(
-                "UNKNOWN_SLOT",
-                f"registry 中没有槽: {slot}",
-                details={"available": sorted(slots.keys())},
+                "UNKNOWN_CAPABILITY",
+                f"能力目录中没有: {capability}",
+                details={"available": sorted(entries.keys())},
             ).to_dict(),
             started=started,
-            run_id=run_id,
+        )
+
+    if capability in _disabled():
+        return _envelope(
+            ok=False,
+            capability=capability,
+            action=action,
+            provider=str(entry.get("primary") or "-"),
+            error=ToolError(
+                "CAPABILITY_DISABLED",
+                f"{capability} 已在面板中停用",
+                details={"state": str(DISABLED_STATE)},
+            ).to_dict(),
+            started=started,
         )
 
     actions = entry.get("actions") or []
     if action not in actions:
         return _envelope(
             ok=False,
-            slot=slot,
+            capability=capability,
             action=action,
-            adapter=str(entry.get("primary") or "-"),
+            provider=str(entry.get("primary") or "-"),
             error=ToolError(
                 "UNKNOWN_ACTION",
-                f"{slot} 不支持动作: {action}",
+                f"{capability} 不支持动作: {action}",
                 details={"actions": actions},
             ).to_dict(),
             started=started,
-            run_id=run_id,
         )
 
-    module = _load_adapter(slot)
+    kind = str(entry.get("kind") or "")
+    if kind == "pending":
+        return _envelope(
+            ok=False,
+            capability=capability,
+            action=action,
+            provider=str(entry.get("primary") or "-"),
+            error=ToolError(
+                "CAPABILITY_PENDING",
+                f"{capability} 尚未接入，不能调用",
+                details={"notes": entry.get("notes") or ""},
+            ).to_dict(),
+            started=started,
+        )
+
+    if kind == "mcp":
+        return _envelope(
+            ok=True,
+            capability=capability,
+            action=action,
+            provider=str(entry.get("primary") or "mcp"),
+            data=_mcp_data(entry),
+            started=started,
+        )
+
+    runtime = _runtime(catalog)
     providers = _provider_chain(entry)
     if not providers:
         return _envelope(
             ok=False,
-            slot=slot,
+            capability=capability,
             action=action,
-            adapter="-",
-            error=ToolError("INTERNAL", f"{slot} 没有 provider").to_dict(),
+            provider="-",
+            error=ToolError("INTERNAL", f"{capability} 没有 provider").to_dict(),
             started=started,
-            run_id=run_id,
         )
+    if forced_provider:
+        if forced_provider not in providers:
+            return _envelope(
+                ok=False,
+                capability=capability,
+                action=action,
+                provider=str(forced_provider),
+                error=ToolError(
+                    "INVALID_INPUT",
+                    f"{capability} 不支持 provider: {forced_provider}",
+                    details={"providers": providers},
+                ).to_dict(),
+                started=started,
+            )
+        providers = [forced_provider]
 
     degradation: list[dict[str, Any]] = []
     attempts: list[dict[str, Any]] = []
@@ -252,16 +319,17 @@ def dispatch(
 
     for index, provider in enumerate(providers):
         try:
-            data = module.execute(action, payload, provider=provider)
+            data = _run_provider(kind, capability, entry, action, payload, provider, runtime)
+            cached = data.pop("_cached", None) if isinstance(data, dict) else None
             return _envelope(
                 ok=True,
-                slot=slot,
+                capability=capability,
                 action=action,
-                adapter=provider,
+                provider=provider,
                 data=data,
                 degradation=degradation,
                 started=started,
-                run_id=run_id,
+                cached=bool(cached) if cached is not None else None,
             )
         except ToolError as exc:
             last_error = exc
@@ -271,7 +339,7 @@ def dispatch(
             next_provider = providers[index + 1]
             degradation.append(
                 {
-                    "slot": slot,
+                    "capability": capability,
                     "from": provider,
                     "to": next_provider,
                     "reason": f"{exc.code}: {exc.message}",
@@ -280,18 +348,18 @@ def dispatch(
         except Exception as exc:  # 未预期异常不静默降级
             last_error = ToolError(
                 "INTERNAL",
-                f"{slot} 适配器异常: {type(exc).__name__}",
+                f"{capability} 执行异常: {type(exc).__name__}",
                 details={"provider": provider},
             )
             attempts.append({"provider": provider, "code": "INTERNAL", "message": type(exc).__name__})
             break
 
     if last_error is None:
-        last_error = ToolError("INTERNAL", f"{slot} 未执行")
+        last_error = ToolError("INTERNAL", f"{capability} 未执行")
     if len(attempts) > 1:
         error = ToolError(
             "FALLBACK_EXHAUSTED",
-            f"{slot} 主备均失败",
+            f"{capability} 主备均失败",
             retryable=last_error.retryable,
             details={"attempts": attempts},
         ).to_dict()
@@ -300,84 +368,125 @@ def dispatch(
         error.setdefault("details", {})["attempts"] = attempts
     return _envelope(
         ok=False,
-        slot=slot,
+        capability=capability,
         action=action,
-        adapter=last_provider,
+        provider=last_provider,
         error=error,
         degradation=degradation,
         started=started,
-        run_id=run_id,
     )
 
 
-def list_slots() -> dict[str, Any]:
-    registry = load_registry()
-    slots: dict[str, Any] = {}
-    for slot, entry in (registry.get("slots") or {}).items():
-        item = {
-            "purpose": entry.get("purpose"),
+def _env_presence(entry: dict[str, Any]) -> dict[str, bool]:
+    return {name: bool(os.environ.get(name)) for name in (entry.get("env") or [])}
+
+
+def _cli_binary(capability: str, entry: dict[str, Any], runtime: dict[str, str]) -> str:
+    exec_map = entry.get("exec") or {}
+    primary = entry.get("primary")
+    argv = exec_map.get(primary) or []
+    if not argv:
+        return ""
+    binary = str(argv[0]).replace("{WF_BIN}", runtime["bin"]).replace("{WF_VENV}", runtime["venv"])
+    return binary
+
+
+def list_capabilities() -> dict[str, Any]:
+    catalog = load_catalog()
+    runtime = _runtime(catalog)
+    disabled = _disabled()
+    items: dict[str, Any] = {}
+    for name, entry in (catalog.get("capabilities") or {}).items():
+        item: dict[str, Any] = {
+            "enabled": name not in disabled,
+            "label": entry.get("label"),
+            "kind": entry.get("kind"),
             "actions": entry.get("actions"),
             "primary": entry.get("primary"),
             "alternate": entry.get("alternate"),
             "fallback": entry.get("fallback"),
             "status": entry.get("status"),
-            "license": entry.get("license"),
+            "env": _env_presence(entry),
+            "notes": entry.get("notes") or "",
         }
-        if slot not in CORE_SLOTS:
+        kind = entry.get("kind")
+        if kind == "adapter":
             try:
-                manifest = load_manifest(slot)
+                manifest = load_manifest(name)
                 item["manifest"] = {
                     "version": manifest.get("version"),
                     "providers": manifest.get("providers"),
-                    "credentials": manifest.get("credentials"),
                 }
             except ToolError as exc:
                 item["manifestError"] = exc.message
-        slots[slot] = item
+        elif kind == "cli":
+            binary = _cli_binary(name, entry, runtime)
+            item["command"] = binary
+            item["commandExists"] = bool(binary) and os.path.isfile(binary)
+        elif kind == "mcp":
+            item["mcpServer"] = entry.get("mcp_server")
+            item["mcpTools"] = entry.get("mcp_tools") or []
+        items[name] = item
     return {
-        "registry": str(DEFAULT_REGISTRY),
-        "slots": slots,
-        "builtins": sorted(CORE_SLOTS - set(slots)),
+        "catalog": str(DEFAULT_CATALOG),
+        "runtime": runtime,
+        "capabilities": items,
         "checkedAt": utc_now(),
     }
 
 
-def health(slot: str | None = None) -> dict[str, Any]:
-    registry = load_registry()
-    entries = registry.get("slots") or {}
-    all_names = list(entries.keys()) + [name for name in sorted(CORE_SLOTS) if name not in entries]
-    selected = [slot] if slot else all_names
+def health(capability: str | None = None) -> dict[str, Any]:
+    catalog = load_catalog()
+    runtime = _runtime(catalog)
+    entries = catalog.get("capabilities") or {}
+    selected = [capability] if capability else list(entries.keys())
     result: dict[str, Any] = {}
     degraded: list[str] = []
     missing: list[str] = []
+    pending: list[str] = []
 
     for name in selected:
-        if name in CORE_SLOTS:
-            try:
-                _load_core(name)
-                result[name] = {"status": "active", "adapter": "internal"}
-            except ToolError as exc:
-                result[name] = {"status": "missing", "reason": exc.message}
-                missing.append(name)
-            continue
         entry = entries.get(name)
         if not isinstance(entry, dict):
-            result[name] = {"status": "missing", "reason": "registry 中没有该槽"}
+            result[name] = {"status": "missing", "reason": "能力目录中没有该项"}
             missing.append(name)
             continue
-        try:
-            module = _load_adapter(name)
-        except ToolError as exc:
-            result[name] = {"status": "missing", "reason": exc.message}
-            missing.append(name)
+
+        if name in _disabled():
+            result[name] = {"status": "disabled", "reason": "面板中已停用"}
             continue
-        providers = _provider_chain(entry)
+
+        kind = entry.get("kind")
+        if entry.get("status") == "pending" or kind == "pending":
+            result[name] = {
+                "status": "pending",
+                "reason": entry.get("notes") or "尚未接入",
+            }
+            pending.append(name)
+            continue
+
+        if kind == "mcp":
+            result[name] = {
+                "status": "active",
+                "provider": entry.get("primary"),
+                "external": True,
+                "server": entry.get("mcp_server"),
+                "tools": entry.get("mcp_tools") or [],
+            }
+            continue
+
         checks: dict[str, Any] = {}
-        for provider in providers:
+        for provider in _provider_chain(entry):
             try:
-                checks[provider] = module.health(provider)
+                if kind == "adapter":
+                    checks[provider] = _load_adapter(name).health(provider)
+                elif kind == "cli":
+                    checks[provider] = _load_cli_tool().health(entry, provider, runtime)
+                else:
+                    checks[provider] = {"ok": False, "reason": f"未知类型: {kind}"}
             except ToolError as exc:
                 checks[provider] = {"ok": False, "provider": provider, "error": exc.to_dict()}
+
         primary = entry.get("primary")
         primary_ok = bool(checks.get(primary, {}).get("ok"))
         any_ok = any(bool(v.get("ok")) for v in checks.values())
@@ -390,15 +499,62 @@ def health(slot: str | None = None) -> dict[str, Any]:
 
     return {
         "checkedAt": utc_now(),
-        "slots": result,
+        "capabilities": result,
         "degraded": degraded,
         "missing": missing,
+        "pending": pending,
+    }
+
+
+def doctor() -> dict[str, Any]:
+    catalog = load_catalog()
+    runtime = _runtime(catalog)
+    capabilities: dict[str, Any] = {}
+    for name, entry in (catalog.get("capabilities") or {}).items():
+        kind = entry.get("kind")
+        item: dict[str, Any] = {
+            "kind": kind,
+            "status": entry.get("status"),
+            "env": _env_presence(entry),
+        }
+        if kind == "cli":
+            binary = _cli_binary(name, entry, runtime)
+            item["command"] = binary
+            item["commandExists"] = bool(binary) and os.path.isfile(binary)
+        elif kind == "adapter":
+            item["manifestExists"] = (ROOT / "tools" / "adapters" / name / "manifest.yaml").is_file()
+        elif kind == "mcp":
+            item["mcpServer"] = entry.get("mcp_server")
+            item["mcpTools"] = entry.get("mcp_tools") or []
+        elif kind == "pending":
+            item["notes"] = entry.get("notes") or ""
+        capabilities[name] = item
+
+    haha_path = os.environ.get("WF_HAHA_SIDECAR") or HAHA_SIDECAR
+    hosts = {
+        "haha": {"detected": Path(haha_path).is_file(), "path": haha_path},
+        "claude": {"detected": bool(shutil.which("claude")), "path": shutil.which("claude") or ""},
+        "dsh": {"detected": bool(shutil.which("dsh") or shutil.which("dsh-next")), "path": shutil.which("dsh") or shutil.which("dsh-next") or ""},
+    }
+
+    return {
+        "checkedAt": utc_now(),
+        "runtime": {
+            "bin": runtime["bin"],
+            "binExists": bool(runtime["bin"]) and Path(runtime["bin"]).is_dir(),
+            "venv": runtime["venv"],
+            "venvExists": bool(runtime["venv"]) and Path(runtime["venv"]).is_dir(),
+        },
+        "capabilities": capabilities,
+        "hosts": hosts,
     }
 
 
 def _parse_scalar(value: str) -> Any:
     if value in {"true", "false"}:
         return value == "true"
+    if value in {"null", "none"}:
+        return None
     return value
 
 
@@ -407,20 +563,18 @@ def parse_payload(argv: list[str]) -> dict[str, Any]:
     i = 0
     while i < len(argv):
         token = argv[i]
-        if token in {"--json", "--input"}:
+        if token == "--json":
             if i + 1 >= len(argv):
-                raise ToolError("INVALID_INPUT", f"{token} 缺少值")
+                raise ToolError("INVALID_INPUT", "--json 缺少值")
             raw = argv[i + 1]
             if raw == "-":
                 raw = sys.stdin.read()
-            elif token == "--input":
-                raw = Path(raw).read_text(encoding="utf-8")
             try:
                 parsed = json.loads(raw)
             except ValueError as exc:
-                raise ToolError("INVALID_INPUT", f"{token} 不是合法 JSON") from exc
+                raise ToolError("INVALID_INPUT", "--json 不是合法 JSON") from exc
             if not isinstance(parsed, dict):
-                raise ToolError("INVALID_INPUT", f"{token} 必须是 JSON 对象")
+                raise ToolError("INVALID_INPUT", "--json 必须是 JSON 对象")
             payload.update(parsed)
             i += 2
             continue
@@ -438,20 +592,11 @@ def parse_payload(argv: list[str]) -> dict[str, Any]:
             i += 1
         key = KEY_ALIASES.get(key, key)
         value = _parse_scalar(value)
-        if key == "names" and isinstance(value, str):
-            value = [x.strip() for x in value.split(",") if x.strip()]
-        elif key in {"blocks", "promptBlocks"} and isinstance(value, str):
-            value = [x.strip() for x in value.split(",") if x.strip()]
-        elif key in NUMERIC_KEYS:
+        if key in NUMERIC_KEYS:
             try:
                 value = int(value)
             except (TypeError, ValueError) as exc:
                 raise ToolError("INVALID_INPUT", f"{key} 必须是整数") from exc
-        elif key in {"run", "evidence"} and isinstance(value, str):
-            try:
-                value = json.loads(value)
-            except ValueError as exc:
-                raise ToolError("INVALID_INPUT", f"{key} 必须是 JSON") from exc
         payload[key] = value
         i += 1
     return payload
@@ -466,6 +611,39 @@ def emit(envelope: dict[str, Any]) -> int:
     return 0 if envelope.get("ok") else 1
 
 
+def _emit_data(data: Any) -> int:
+    return emit(
+        {
+            "ok": True,
+            "data": data,
+            "error": None,
+            "degradation": [],
+            "meta": {"ms": 0},
+        }
+    )
+
+
+def _panel() -> int:
+    catalog = load_catalog()
+    runtime = _runtime(catalog)
+    streamlit = Path(runtime["venv"]) / "Scripts" / "streamlit.exe"
+    if not streamlit.is_file():
+        found = shutil.which("streamlit")
+        if not found:
+            raise ToolError("TOOL_MISSING", "找不到 streamlit，请先安装或设置 WF_VENV")
+        streamlit = Path(found)
+    subprocess.Popen(
+        [
+            str(streamlit),
+            "run",
+            str(ROOT / "panel" / "app.py"),
+            "--server.headless",
+            "true",
+        ]
+    )
+    return _emit_data({"started": True, "command": str(streamlit)})
+
+
 def main(argv: list[str] | None = None) -> int:
     argv = list(sys.argv[1:] if argv is None else argv)
     if not argv or argv[0] in {"-h", "--help", "help"}:
@@ -473,39 +651,35 @@ def main(argv: list[str] | None = None) -> int:
         sys.stdout.buffer.flush()
         return 0
     try:
-        if argv[0] == "list":
-            return emit(
-                {
-                    "ok": True,
-                    "data": list_slots(),
-                    "error": None,
-                    "degradation": [],
-                    "meta": {"ms": 0},
-                }
-            )
-        if argv[0] == "health":
-            slot = argv[1] if len(argv) > 1 and not argv[1].startswith("--") else None
-            return emit(
-                {
-                    "ok": True,
-                    "data": health(slot),
-                    "error": None,
-                    "degradation": [],
-                    "meta": {"ms": 0},
-                }
-            )
-        if len(argv) < 2:
-            raise ToolError("INVALID_INPUT", "需要 <slot> <action>")
-        slot, action = argv[0], argv[1]
-        payload = parse_payload(argv[2:])
-        return emit(dispatch(slot, action, payload, run_id=payload.get("run_id")))
+        command = argv[0]
+        if command == "list":
+            return _emit_data(list_capabilities())
+        if command == "health":
+            name = argv[1] if len(argv) > 1 and not argv[1].startswith("--") else None
+            return _emit_data(health(name))
+        if command == "doctor":
+            return _emit_data(doctor())
+        if command == "panel":
+            return _panel()
+        if command == "call":
+            if len(argv) < 3:
+                raise ToolError("INVALID_INPUT", "需要 call <capability> <action>")
+            capability, action = argv[1], argv[2]
+            payload = parse_payload(argv[3:])
+            return emit(dispatch(capability, action, payload))
+        # 兼容旧式：<capability> <action>
+        if len(argv) >= 2:
+            capability, action = argv[0], argv[1]
+            payload = parse_payload(argv[2:])
+            return emit(dispatch(capability, action, payload))
+        raise ToolError("INVALID_INPUT", "未知命令")
     except ToolError as exc:
         return emit(
             {
                 "ok": False,
-                "slot": "-",
+                "capability": "-",
                 "action": "-",
-                "adapter": "-",
+                "provider": "-",
                 "data": None,
                 "error": exc.to_dict(),
                 "degradation": [],

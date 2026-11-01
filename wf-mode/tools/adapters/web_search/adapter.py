@@ -8,7 +8,7 @@ from __future__ import annotations
 import os
 from typing import Any, Callable
 
-from tools import http_client
+from tools import cache, http_client
 from tools.errors import ToolError
 from tools.util import first_env, utc_now
 
@@ -46,6 +46,11 @@ def _search_tavily(payload: dict[str, Any]) -> dict[str, Any]:
         )
     query = _query(payload)
     limit = _max_results(payload)
+    cache_key = cache.make_key(query, limit)
+    cached = cache.get(SLOT, "tavily", cache_key)
+    if cached is not None:
+        cached["_cached"] = True
+        return cached
     data = http_client.post_json(
         "https://api.tavily.com/search",
         {
@@ -80,7 +85,10 @@ def _search_tavily(payload: dict[str, Any]) -> dict[str, Any]:
         if published:
             result["publishedAt"] = str(published)
         results.append(result)
-    return {"query": query, "results": results}
+    output = {"query": query, "results": results}
+    cache.put(SLOT, "tavily", cache_key, output)
+    output["_cached"] = False
+    return output
 
 
 def _search_exa(payload: dict[str, Any]) -> dict[str, Any]:
@@ -94,6 +102,11 @@ def _search_exa(payload: dict[str, Any]) -> dict[str, Any]:
         )
     query = _query(payload)
     limit = _max_results(payload)
+    cache_key = cache.make_key(query, limit)
+    cached = cache.get(SLOT, "exa", cache_key)
+    if cached is not None:
+        cached["_cached"] = True
+        return cached
     data = http_client.post_json(
         "https://api.exa.ai/search",
         {
@@ -128,7 +141,10 @@ def _search_exa(payload: dict[str, Any]) -> dict[str, Any]:
         if published:
             result["publishedAt"] = str(published)
         results.append(result)
-    return {"query": query, "results": results}
+    output = {"query": query, "results": results}
+    cache.put(SLOT, "exa", cache_key, output)
+    output["_cached"] = False
+    return output
 
 
 PROVIDER_FUNCS: dict[str, Callable[[dict[str, Any]], dict[str, Any]]] = {

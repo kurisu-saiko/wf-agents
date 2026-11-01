@@ -1,0 +1,19 @@
+# 缓存
+__pycache__/
+*.pyc
+.pytest_cache/
+
+# 宿主配置与会话（不得进开源包）
+.claude.json
+cc-haha/
+sessions/
+projects/
+telemetry/
+backups/
+
+# 生成物与归档
+agents/wf-agent.md
+runtime/
+plans/
+panel/backups/
+legacy/

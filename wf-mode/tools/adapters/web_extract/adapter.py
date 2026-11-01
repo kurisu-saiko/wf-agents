@@ -5,7 +5,7 @@ from __future__ import annotations
 import os
 from typing import Any, Callable
 
-from tools import http_client
+from tools import cache, http_client
 from tools.errors import ToolError
 from tools.util import first_env, utc_now
 
@@ -34,6 +34,11 @@ def _extract_firecrawl(payload: dict[str, Any]) -> dict[str, Any]:
             allow_fallback=True,
         )
     url = _url(payload)
+    cache_key = cache.make_key(url)
+    cached = cache.get(SLOT, "firecrawl", cache_key)
+    if cached is not None:
+        cached["_cached"] = True
+        return cached
     data = http_client.post_json(
         "https://api.firecrawl.dev/v1/scrape",
         {"url": url, "formats": ["markdown"], "onlyMainContent": True},
@@ -51,7 +56,7 @@ def _extract_firecrawl(payload: dict[str, Any]) -> dict[str, Any]:
         or metadata.get("date")
         or ""
     )
-    return {
+    output = {
         "url": url,
         "title": str(metadata.get("title") or ""),
         "text": text[:20000],
@@ -61,16 +66,24 @@ def _extract_firecrawl(payload: dict[str, Any]) -> dict[str, Any]:
             "publishedTime": str(published),
         },
     }
+    cache.put(SLOT, "firecrawl", cache_key, output)
+    output["_cached"] = False
+    return output
 
 
 def _extract_jina(payload: dict[str, Any]) -> dict[str, Any]:
     url = _url(payload)
+    cache_key = cache.make_key(url)
+    cached = cache.get(SLOT, "jina", cache_key)
+    if cached is not None:
+        cached["_cached"] = True
+        return cached
     headers = {"Accept": "text/plain"}
     key, _ = first_env("JINA_API_KEY", "JINA")
     if key:
         headers["Authorization"] = f"Bearer {key}"
     text = http_client.get_text(f"https://r.jina.ai/{url}", headers=headers, provider="jina")
-    return {
+    output = {
         "url": url,
         "title": "",
         "text": text[:20000],
@@ -80,6 +93,9 @@ def _extract_jina(payload: dict[str, Any]) -> dict[str, Any]:
             "publishedTime": "",
         },
     }
+    cache.put(SLOT, "jina", cache_key, output)
+    output["_cached"] = False
+    return output
 
 
 PROVIDER_FUNCS: dict[str, Callable[[dict[str, Any]], dict[str, Any]]] = {

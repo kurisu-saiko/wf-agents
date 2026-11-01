@@ -1,0 +1,195 @@
+# 能力目录：装配工具与外部能力。
+# kind: adapter（内部适配器）| cli（本地工具）| mcp（宿主 MCP）| pending（未验证）
+# status: active（已接入）| pending（仅登记）| missing（运行时不健康）
+version: 1
+
+runtime:
+  # 安装脚本或环境变量可覆盖；doctor 会报告实际解析路径。
+  bin: "D:/claude-code/tool/.wf-feasibility/bin"
+  venv: "D:/claude-code/tool/.wf-feasibility/venv"
+
+capabilities:
+  web_search:
+    label: 网页搜索
+    kind: adapter
+    actions: [search, health]
+    providers: [tavily, exa]
+    primary: tavily
+    alternate: exa
+    fallback: [exa]
+    env: [TAVILY_API_KEY, TAVILY, EXA_API_KEY, EXA]
+    status: active
+    notes: Tavily 主、Exa 备；用于发现线索与候选，不直接用摘要下结论。
+
+  web_extract:
+    label: 网页正文抽取
+    kind: adapter
+    actions: [extract, health]
+    providers: [firecrawl, jina]
+    primary: firecrawl
+    alternate: jina
+    fallback: [jina]
+    env: [FIRECRAWL_API_KEY, FIRECRAWL, JINA_API_KEY, JINA]
+    status: active
+    notes: Firecrawl 主、Jina 备；读取真实正文，不接受标题或摘要。
+
+  project_search:
+    label: 项目发现
+    kind: adapter
+    actions: [search, lookup, health]
+    providers: [github]
+    primary: github
+    alternate: null
+    env: [GITHUB_TOKEN, GH_TOKEN, GITHUB_MCP_TOKEN]
+    status: active
+    notes: GitHub REST；token 可选。与 GitHub MCP 互补。
+
+  package_meta:
+    label: 包/仓库元数据
+    kind: mcp
+    actions: [lookup, health]
+    providers: [github-mcp]
+    primary: github-mcp
+    mcp_server: plugin_office-github_service
+    mcp_tools: [get_file_contents, list_releases, get_latest_release, list_tags, list_commits]
+    env: []
+    status: active
+    notes: 由宿主 GitHub MCP 提供；wf-tool 只报告接入状态，实际调用由 agent 直接使用 MCP。
+
+  package_security:
+    label: 仓库健康/安全
+    kind: pending
+    actions: [score, health]
+    providers: [scorecard]
+    primary: scorecard
+    alternate: null
+    exec:
+      scorecard: ["{WF_BIN}/scorecard/scorecard.exe", "--repo={repo}", "--format=json"]
+    env: []
+    status: pending
+    notes: scorecard 可运行，但首次评分超过 60s；osv/trivy 需要本地路径。暂不接线，先在计划中列为缺口。
+
+  repo_ingest:
+    label: 仓库转上下文
+    kind: cli
+    actions: [ingest, health]
+    providers: [gitingest]
+    primary: gitingest
+    alternate: null
+    exec:
+      gitingest: ["{WF_VENV}/Scripts/gitingest.exe", "{repo}", "--output", "-"]
+    env: [GITHUB_TOKEN]
+    status: active
+    notes: gitingest 主；code2prompt 可作备选，暂未接线。
+
+  dependency_graph:
+    label: 依赖与边界
+    kind: cli
+    actions: [graph, health]
+    providers: [pydeps]
+    primary: pydeps
+    alternate: null
+    exec:
+      pydeps: ["{WF_VENV}/Scripts/pydeps.exe", "{path}", "--show-deps", "--no-output", "--noshow"]
+    env: []
+    status: active
+    notes: 仅覆盖本地 Python 项目；其他语言后续登记 import-linter / madge / dependency-cruiser。
+
+  structural_search:
+    label: 结构搜索
+    kind: cli
+    actions: [search, health]
+    providers: [ast-grep]
+    primary: ast-grep
+    alternate: null
+    exec:
+      ast-grep: ["{WF_BIN}/ast-grep/ast-grep.exe", "run", "--pattern", "{pattern}", "--lang", "{lang}", "--json=compact", "{path}"]
+    env: []
+    status: active
+    notes: ast-grep 结构搜索；需要本地路径或已缓存仓库；远程代码检索优先用 GitHub MCP search_code。
+
+  license_sbom:
+    label: 许可与 SBOM
+    kind: pending
+    actions: [scan, health]
+    providers: [syft]
+    primary: syft
+    alternate: null
+    exec:
+      syft: ["{WF_BIN}/syft/syft.exe", "scan", "{path}", "-o", "json"]
+    env: []
+    status: pending
+    notes: syft/pip-licenses/reuse 需要本地仓库路径；计划模式不克隆，暂不接线。远程许可优先用 GitHub 元数据。
+
+  scaffold:
+    label: 模板/脚手架
+    kind: cli
+    actions: [render, health]
+    providers: [copier]
+    primary: copier
+    alternate: null
+    exec:
+      copier: ["{WF_VENV}/Scripts/copier.exe", "copy", "{template}", "{destination}", "--defaults"]
+    env: []
+    status: active
+    notes: 会写文件；只允许在执行阶段、用户批准后调用，计划阶段禁用。
+
+  code_graph:
+    label: 代码图/架构
+    kind: pending
+    actions: [index, query, impact, health]
+    providers: [codebase-memory-mcp]
+    primary: codebase-memory-mcp
+    env: []
+    status: pending
+    notes: 二进制已存在，但 MCP 未注册、未实测；先不用。
+
+  repo_fetch:
+    label: 取仓库子集
+    kind: pending
+    actions: [fetch, health]
+    providers: [git-sparse-checkout, degit]
+    primary: git-sparse-checkout
+    env: []
+    status: pending
+    notes: 会写临时文件；需在执行阶段使用，暂不接线。
+
+  toolchain:
+    label: 工具链初始化
+    kind: pending
+    actions: [init, health]
+    providers: [uv, npm, pnpm]
+    primary: uv
+    env: []
+    status: pending
+    notes: 会写项目文件、装依赖；计划阶段禁用。
+
+  deploy_runtime:
+    label: 运行时/服务
+    kind: pending
+    actions: [plan, apply, health]
+    providers: [winsw, waitress, caddy]
+    primary: winsw
+    env: []
+    status: pending
+    notes: 涉及部署，必须用户批准；第一版不开放。
+
+  reverse_proxy:
+    label: 反向代理
+    kind: pending
+    actions: [plan, apply, health]
+    providers: [caddy]
+    primary: caddy
+    env: []
+    status: pending
+    notes: 涉及共享服务配置，必须用户批准；第一版不开放。
+
+  managed_platform:
+    label: 托管部署
+    kind: pending
+    actions: [plan, apply, health]
+    providers: [vercel, netlify, cloudflare, azure]
+    primary: vercel
+    env: []
+    status: pending
+    notes: 依赖账号与额度，必须用户批准；第一版不开放。

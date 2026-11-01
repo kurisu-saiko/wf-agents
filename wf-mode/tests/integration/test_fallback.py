@@ -35,7 +35,7 @@ def test_primary_failure_falls_back_to_alternate(monkeypatch):
 
     env = wf_tool.dispatch("web_search", "search", {"query": "x"})
     assert env["ok"] is True
-    assert env["adapter"] == "exa"
+    assert env["provider"] == "exa"
     assert env["degradation"][0]["from"] == "tavily"
     assert env["degradation"][0]["to"] == "exa"
 
@@ -74,8 +74,39 @@ def test_web_extract_falls_back_to_jina(monkeypatch):
 
     env = wf_tool.dispatch("web_extract", "extract", {"url": "https://example.com"})
     assert env["ok"] is True
-    assert env["adapter"] == "jina"
+    assert env["provider"] == "jina"
     assert env["degradation"][0]["to"] == "jina"
+
+
+def test_forced_provider_skips_primary(monkeypatch):
+    adapter = importlib.import_module("tools.adapters.web_search.adapter")
+    calls = []
+
+    def primary(payload):
+        calls.append("tavily")
+        return {"query": payload["query"], "results": []}
+
+    def alternate(payload):
+        calls.append("exa")
+        return {
+            "query": payload["query"],
+            "results": [{"title": "ok", "url": "https://example.com", "snippet": "ok"}],
+        }
+
+    monkeypatch.setitem(adapter.PROVIDER_FUNCS, "tavily", primary)
+    monkeypatch.setitem(adapter.PROVIDER_FUNCS, "exa", alternate)
+
+    env = wf_tool.dispatch("web_search", "search", {"query": "x", "provider": "exa"})
+    assert env["ok"] is True
+    assert env["provider"] == "exa"
+    assert calls == ["exa"]
+    assert env["degradation"] == []
+
+
+def test_forced_invalid_provider_is_rejected():
+    env = wf_tool.dispatch("web_search", "search", {"query": "x", "provider": "nope"})
+    assert env["ok"] is False
+    assert env["error"]["code"] == "INVALID_INPUT"
 
 
 def test_project_search_normalizes_github(monkeypatch):
