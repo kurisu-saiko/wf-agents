@@ -16,11 +16,15 @@ import importlib
 import json
 import os
 import shutil
+import socket
 import subprocess
 import sys
 import time
 from pathlib import Path
 from typing import Any
+from urllib import request as urlrequest
+from urllib.error import URLError
+import webbrowser
 
 ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
@@ -28,22 +32,21 @@ if str(ROOT) not in sys.path:
 
 import yaml  # noqa: E402
 
+from tools import config as local_config  # noqa: E402
 from tools.errors import ToolError  # noqa: E402
 from tools.util import first_env, utc_now  # noqa: E402
 
 CONTRACTS = ROOT / "contracts"
 DEFAULT_CATALOG = ROOT / "capabilities.yaml"
 DISABLED_STATE = ROOT / "panel" / "state.json"
+PANEL_LOCK = ROOT / ".wf" / "panel.lock.json"
+PANEL_LOG = ROOT / ".wf" / "logs" / "panel.log"
+PANEL_BASE_PORT = 8765
+PANEL_PORT_SPAN = 30
 MODULE_CACHE: dict[str, Any] = {}
 
 NUMERIC_KEYS = {"maxResults", "max_results"}
 KEY_ALIASES = {"max-results": "maxResults", "max_results": "maxResults"}
-
-HAHA_SIDECAR = (
-    "D:/claude-code/gui/Claude Code Haha/resources/app.asar.unpacked/"
-    "src-tauri/binaries/claude-sidecar-x86_64-pc-windows-msvc.exe"
-)
-
 
 def _load_schema(name: str) -> dict[str, Any]:
     return json.loads((CONTRACTS / name).read_text(encoding="utf-8"))
@@ -76,6 +79,10 @@ def load_catalog(path: str | Path | None = None) -> dict[str, Any]:
     if not isinstance(data, dict):
         raise ToolError("INTERNAL", "capabilities.yaml 顶层必须是对象")
     _validate(data, "capability.schema.json")
+    try:
+        local_config.merge_catalog(data)
+    except local_config.ConfigError as exc:
+        raise ToolError("INTERNAL", f"本地配置无效: {exc}") from exc
     for name, entry in (data.get("capabilities") or {}).items():
         providers = entry.get("providers") or []
         primary = entry.get("primary")
@@ -135,10 +142,18 @@ def _disabled() -> set[str]:
 
 
 def _runtime(catalog: dict[str, Any]) -> dict[str, str]:
+    try:
+        configured = local_config.load_config().get("runtime") or {}
+    except local_config.ConfigError as exc:
+        raise ToolError("INTERNAL", f"本地配置无效: {exc}") from exc
     runtime = catalog.get("runtime") or {}
     return {
-        "bin": str(os.environ.get("WF_BIN") or runtime.get("bin") or ""),
-        "venv": str(os.environ.get("WF_VENV") or runtime.get("venv") or ""),
+        "bin": str(
+            configured.get("bin") or os.environ.get("WF_BIN") or runtime.get("bin") or ""
+        ),
+        "venv": str(
+            configured.get("venv") or os.environ.get("WF_VENV") or runtime.get("venv") or ""
+        ),
     }
 
 
@@ -378,7 +393,25 @@ def dispatch(
 
 
 def _env_presence(entry: dict[str, Any]) -> dict[str, bool]:
-    return {name: bool(os.environ.get(name)) for name in (entry.get("env") or [])}
+    result: dict[str, bool] = {}
+    for name in entry.get("env") or []:
+        try:
+            value, _, _ = local_config.resolve_secret(name)
+        except local_config.ConfigError as exc:
+            raise ToolError("INTERNAL", f"本地配置无效: {exc}") from exc
+        result[name] = bool(value)
+    return result
+
+
+def _env_sources(entry: dict[str, Any]) -> dict[str, str]:
+    result: dict[str, str] = {}
+    for name in entry.get("env") or []:
+        try:
+            _, _, origin = local_config.resolve_secret(name)
+        except local_config.ConfigError as exc:
+            raise ToolError("INTERNAL", f"本地配置无效: {exc}") from exc
+        result[name] = origin
+    return result
 
 
 def _cli_binary(capability: str, entry: dict[str, Any], runtime: dict[str, str]) -> str:
@@ -402,11 +435,13 @@ def list_capabilities() -> dict[str, Any]:
             "label": entry.get("label"),
             "kind": entry.get("kind"),
             "actions": entry.get("actions"),
+            "providers": entry.get("providers") or [],
             "primary": entry.get("primary"),
             "alternate": entry.get("alternate"),
             "fallback": entry.get("fallback"),
             "status": entry.get("status"),
             "env": _env_presence(entry),
+            "envSources": _env_sources(entry),
             "notes": entry.get("notes") or "",
         }
         kind = entry.get("kind")
@@ -516,6 +551,7 @@ def doctor() -> dict[str, Any]:
             "kind": kind,
             "status": entry.get("status"),
             "env": _env_presence(entry),
+            "envSources": _env_sources(entry),
         }
         if kind == "cli":
             binary = _cli_binary(name, entry, runtime)
@@ -530,7 +566,7 @@ def doctor() -> dict[str, Any]:
             item["notes"] = entry.get("notes") or ""
         capabilities[name] = item
 
-    haha_path = os.environ.get("WF_HAHA_SIDECAR") or HAHA_SIDECAR
+    haha_path = local_config.resolve_haha_sidecar()
     hosts = {
         "haha": {"detected": Path(haha_path).is_file(), "path": haha_path},
         "claude": {"detected": bool(shutil.which("claude")), "path": shutil.which("claude") or ""},
@@ -623,7 +659,79 @@ def _emit_data(data: Any) -> int:
     )
 
 
-def _panel() -> int:
+def _panel_health(port: int, timeout: float = 0.8) -> bool:
+    if not port:
+        return False
+    try:
+        with urlrequest.urlopen(
+            f"http://127.0.0.1:{port}/_stcore/health", timeout=timeout
+        ) as response:
+            return int(getattr(response, "status", 0)) == 200
+    except (URLError, OSError, ValueError):
+        return False
+
+
+def _read_panel_lock() -> dict[str, Any]:
+    try:
+        data = json.loads(PANEL_LOCK.read_text(encoding="utf-8"))
+    except (FileNotFoundError, ValueError, OSError):
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def _write_panel_lock(data: dict[str, Any]) -> None:
+    PANEL_LOCK.parent.mkdir(parents=True, exist_ok=True)
+    temp = PANEL_LOCK.with_name(PANEL_LOCK.name + ".tmp")
+    temp.write_text(
+        json.dumps(data, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
+    )
+    os.replace(temp, PANEL_LOCK)
+
+
+def _free_port(preferred: int) -> int:
+    for port in range(preferred, preferred + PANEL_PORT_SPAN):
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as probe:
+            probe.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            try:
+                probe.bind(("127.0.0.1", port))
+            except OSError:
+                continue
+            return port
+    return 0
+
+
+def _panel_status() -> dict[str, Any]:
+    lock = _read_panel_lock()
+    try:
+        port = int(lock.get("port") or 0)
+    except (TypeError, ValueError):
+        port = 0
+    running = _panel_health(port)
+    return {
+        "running": running,
+        "already_running": running,
+        "port": port,
+        "url": lock.get("url") or (f"http://127.0.0.1:{port}" if port else ""),
+        "pid": lock.get("pid"),
+        "startedAt": lock.get("startedAt"),
+    }
+
+
+def _open_panel(url: str) -> bool:
+    if not url:
+        return False
+    try:
+        return bool(webbrowser.open(url, new=2))
+    except (OSError, webbrowser.Error):
+        return False
+
+
+def _panel_ensure() -> dict[str, Any]:
+    status = _panel_status()
+    if status["running"]:
+        status["opened"] = _open_panel(status.get("url") or "")
+        return status
+
     catalog = load_catalog()
     runtime = _runtime(catalog)
     streamlit = Path(runtime["venv"]) / "Scripts" / "streamlit.exe"
@@ -632,16 +740,106 @@ def _panel() -> int:
         if not found:
             raise ToolError("TOOL_MISSING", "找不到 streamlit，请先安装或设置 WF_VENV")
         streamlit = Path(found)
-    subprocess.Popen(
-        [
-            str(streamlit),
-            "run",
-            str(ROOT / "panel" / "app.py"),
-            "--server.headless",
-            "true",
-        ]
-    )
-    return _emit_data({"started": True, "command": str(streamlit)})
+
+    try:
+        preferred = int(
+            (local_config.load_config().get("panel") or {}).get("port")
+            or PANEL_BASE_PORT
+        )
+    except (local_config.ConfigError, TypeError, ValueError):
+        preferred = PANEL_BASE_PORT
+    port = _free_port(preferred)
+    if not port:
+        return {
+            "running": False,
+            "started": False,
+            "degraded": True,
+            "reason": f"{preferred}–{preferred + PANEL_PORT_SPAN - 1} 没有可用端口",
+        }
+
+    PANEL_LOG.parent.mkdir(parents=True, exist_ok=True)
+    log = open(PANEL_LOG, "ab")
+    kwargs: dict[str, Any] = {}
+    if os.name == "nt":
+        kwargs["creationflags"] = (
+            subprocess.DETACHED_PROCESS | subprocess.CREATE_NEW_PROCESS_GROUP
+        )
+    try:
+        try:
+            proc = subprocess.Popen(
+                [
+                    str(streamlit),
+                    "run",
+                    str(ROOT / "panel" / "app.py"),
+                    "--server.address",
+                    "127.0.0.1",
+                    "--server.headless",
+                    "true",
+                    "--server.port",
+                    str(port),
+                    "--browser.gatherUsageStats",
+                    "false",
+                ],
+                cwd=str(ROOT),
+                stdin=subprocess.DEVNULL,
+                stdout=log,
+                stderr=subprocess.STDOUT,
+                **kwargs,
+            )
+        except OSError as exc:
+            return {
+                "running": False,
+                "started": False,
+                "degraded": True,
+                "reason": local_config.redact(f"启动面板失败: {type(exc).__name__}"),
+            }
+    finally:
+        log.close()
+
+    deadline = time.time() + 8
+    while time.time() < deadline:
+        if _panel_health(port, timeout=0.5):
+            now = utc_now()
+            data = {
+                "running": True,
+                "started": True,
+                "already_running": False,
+                "port": port,
+                "url": f"http://127.0.0.1:{port}",
+                "pid": proc.pid,
+                "startedAt": now,
+            }
+            _write_panel_lock(data)
+            data["opened"] = _open_panel(data["url"])
+            return data
+        time.sleep(0.4)
+
+    try:
+        proc.terminate()
+    except OSError:
+        pass
+    tail = ""
+    try:
+        tail = local_config.redact(
+            PANEL_LOG.read_text(encoding="utf-8", errors="replace")[-800:]
+        )
+    except OSError:
+        pass
+    return {
+        "running": False,
+        "started": False,
+        "degraded": True,
+        "reason": "面板未在 8 秒内就绪",
+        "logTail": tail,
+    }
+
+
+def _panel(mode: str = "ensure") -> int:
+    if mode == "status":
+        return _emit_data(_panel_status())
+    if mode == "ensure":
+        return _emit_data(_panel_ensure())
+    raise ToolError("INVALID_INPUT", f"panel 不支持模式: {mode}")
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -660,7 +858,10 @@ def main(argv: list[str] | None = None) -> int:
         if command == "doctor":
             return _emit_data(doctor())
         if command == "panel":
-            return _panel()
+            mode = "ensure"
+            if len(argv) > 1 and argv[1].startswith("--"):
+                mode = argv[1][2:]
+            return _panel(mode)
         if command == "call":
             if len(argv) < 3:
                 raise ToolError("INVALID_INPUT", "需要 call <capability> <action>")

@@ -1,4 +1,4 @@
-"""面板数据层：调用 wf-tool、读写提示词与启停状态。
+"""面板数据层：调用 wf-tool、读写提示词、启停与本地配置。
 
 只做数据转换与最小 IO；不执行业务逻辑，不记录运行历史。
 """
@@ -6,16 +6,47 @@
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 import sys
 from datetime import datetime
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+
+import yaml  # noqa: E402
+
+from tools import config as wf_config  # noqa: E402
+
 TOOL = ROOT / "tools" / "wf-tool.py"
 AGENT = ROOT / "agent" / "wf-agent.md"
 STATE = ROOT / "panel" / "state.json"
+CATALOG = ROOT / "capabilities.yaml"
 BACKUPS = ROOT / "panel" / "backups"
+
+SECRET_FIELDS: tuple[tuple[str, tuple[str, ...], str], ...] = (
+    ("Tavily", ("TAVILY_API_KEY", "TAVILY"), "TAVILY_API_KEY"),
+    ("Exa", ("EXA_API_KEY", "EXA"), "EXA_API_KEY"),
+    ("Firecrawl", ("FIRECRAWL_API_KEY", "FIRECRAWL"), "FIRECRAWL_API_KEY"),
+    ("Jina", ("JINA_API_KEY", "JINA"), "JINA_API_KEY"),
+    ("GitHub", ("GITHUB_TOKEN", "GH_TOKEN", "GITHUB_MCP_TOKEN"), "GITHUB_TOKEN"),
+)
+
+PROBES: dict[str, list[str]] = {
+    "web_search": ["call", "web_search", "search", "--query", "ping", "--maxResults", "1"],
+    "web_extract": ["call", "web_extract", "extract", "--url", "https://example.com"],
+    "project_search": [
+        "call",
+        "project_search",
+        "search",
+        "--query",
+        "octocat",
+        "--maxResults",
+        "1",
+    ],
+}
 
 
 def _run_tool(args: list[str]) -> dict:
@@ -26,9 +57,10 @@ def _run_tool(args: list[str]) -> dict:
         encoding="utf-8",
         errors="replace",
     )
-    text = (proc.stdout or "").strip()
+    text = wf_config.redact((proc.stdout or "").strip())
     if not text:
-        raise RuntimeError(f"wf-tool 没有输出；stderr: {(proc.stderr or '').strip()[:500]}")
+        stderr = wf_config.redact((proc.stderr or "").strip()[:500])
+        raise RuntimeError(f"wf-tool 没有输出；stderr: {stderr}")
     return json.loads(text)
 
 
@@ -63,6 +95,127 @@ def save_state(disabled: set[str]) -> None:
     )
 
 
+def load_config() -> dict:
+    return wf_config.load_config()
+
+
+def save_config(data: dict) -> str:
+    return str(wf_config.save_config(data))
+
+
+def catalog_defaults() -> dict:
+    data = yaml.safe_load(CATALOG.read_text(encoding="utf-8"))
+    return data if isinstance(data, dict) else {}
+
+
+def masked_secrets() -> dict[str, dict]:
+    data = load_config()
+    secrets = data.get("secrets") or {}
+    result: dict[str, dict] = {}
+    for label, names, canonical in SECRET_FIELDS:
+        value, actual, origin = wf_config.resolve_secret(*names)
+        result[label] = {
+            "present": bool(value),
+            "masked": wf_config.mask(value),
+            "source": origin,
+            "actual": actual,
+            "canonical": canonical,
+            "envPresent": any(bool(os.environ.get(name)) for name in names),
+            "configPresent": any(bool(secrets.get(name)) for name in names),
+        }
+    return result
+
+
+def save_secret_updates(updates: dict[str, str], clears: set[str]) -> str:
+    data = load_config()
+    secrets = dict(data.get("secrets") or {})
+    for label, value in updates.items():
+        if value:
+            for name, names, canonical in SECRET_FIELDS:
+                if name == label:
+                    secrets[canonical] = value
+                    break
+    for label in clears:
+        for name, names, _ in SECRET_FIELDS:
+            if name == label:
+                for alias in names:
+                    secrets.pop(alias, None)
+                break
+    data["secrets"] = secrets
+    return save_config(data)
+
+
+def save_provider_orders(orders: dict[str, list[str]]) -> str:
+    caps = list_capabilities()["capabilities"]
+    data = load_config()
+    providers = dict(data.get("providers") or {})
+    for name, chain in orders.items():
+        declared = caps.get(name, {}).get("providers") or []
+        cleaned = [item for item in chain if item]
+        if not cleaned:
+            providers.pop(name, None)
+            continue
+        unknown = [item for item in cleaned if item not in declared]
+        if unknown:
+            raise ValueError(f"{name} 包含未登记 provider: {', '.join(unknown)}")
+        providers[name] = cleaned
+    data["providers"] = providers
+    return save_config(data)
+
+
+def save_paths(runtime: dict[str, str], cli_paths: dict[str, dict[str, str]]) -> str:
+    data = load_config()
+    current_runtime = dict(data.get("runtime") or {})
+    for key, value in runtime.items():
+        if value:
+            current_runtime[key] = value
+        else:
+            current_runtime.pop(key, None)
+    data["runtime"] = current_runtime
+
+    current_cli = dict(data.get("cli_paths") or {})
+    for capability, mapping in cli_paths.items():
+        target = dict(current_cli.get(capability) or {})
+        for provider, value in mapping.items():
+            if value:
+                target[provider] = value
+            else:
+                target.pop(provider, None)
+        if target:
+            current_cli[capability] = target
+        else:
+            current_cli.pop(capability, None)
+    data["cli_paths"] = current_cli
+    return save_config(data)
+
+
+def reset_paths() -> str:
+    data = load_config()
+    data.pop("runtime", None)
+    data.pop("cli_paths", None)
+    return save_config(data)
+
+
+def probe(capability: str) -> dict:
+    args = PROBES.get(capability)
+    if args:
+        return _run_tool(args)
+    item = list_capabilities()["capabilities"].get(capability)
+    if not item:
+        return {"ok": False, "error": {"code": "UNKNOWN_CAPABILITY", "message": capability}}
+    if item.get("kind") == "cli":
+        return _run_tool(["health", capability])
+    if item.get("kind") == "mcp":
+        return {
+            "ok": True,
+            "data": {
+                "note": "由宿主 MCP 提供，面板无法直接测试；请用 GitHub Token 的连通测试代替。",
+                "provider": item.get("primary"),
+            },
+        }
+    return _run_tool(["health", capability])
+
+
 def split_agent() -> tuple[str, str]:
     text = AGENT.read_text(encoding="utf-8")
     if text.startswith("---"):
@@ -93,5 +246,3 @@ def save_agent_body(body: str) -> str:
     backup.write_text(AGENT.read_text(encoding="utf-8"), encoding="utf-8")
     AGENT.write_text(f"---\n{frontmatter}\n---\n\n{body.rstrip()}\n", encoding="utf-8")
     return str(backup)
-
-

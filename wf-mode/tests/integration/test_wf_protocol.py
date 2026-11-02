@@ -12,16 +12,20 @@ def split_frontmatter(text: str) -> tuple[str, str]:
     return match.group(1), match.group(2)
 
 
-def test_command_declares_two_human_gates():
-    text = COMMAND.read_text(encoding="utf-8")
-    frontmatter, body = split_frontmatter(text)
-
+def test_commands_declare_two_human_gates():
+    frontmatter, body = split_frontmatter(COMMAND.read_text(encoding="utf-8"))
     assert "AskUserQuestion" in frontmatter
     assert "需求确认" in body
-    assert "方案确认" in body
-    assert "需求卡" in body
-    assert "需求覆盖表" in body
-    assert "--mode agent" in body
+    assert "需求理解" in body
+    assert "/wf-plan" in body
+
+    plan_frontmatter, plan_body = split_frontmatter(
+        (ROOT / "commands" / "wf-plan.md").read_text(encoding="utf-8")
+    )
+    assert "AskUserQuestion" in plan_frontmatter
+    assert "方案确认" in plan_body
+    assert "需求对照表" in plan_body
+    assert "/wf-report" in plan_body
 
 
 def test_command_stays_read_only():

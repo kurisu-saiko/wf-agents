@@ -1,0 +1,7 @@
+pytest>=8.0
+PyYAML>=6.0
+httpx>=0.27
+streamlit>=1.40
+
+# 可选：安装后启用契约 schema 校验
+# jsonschema>=4.20

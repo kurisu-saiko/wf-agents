@@ -12,10 +12,10 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 AGENT_SRC = ROOT / "agent" / "wf-agent.md"
 
-CREDENTIALS_CANDIDATES = (
-    Path("D:/claude-code/data/.credentials.json"),
-    Path.home() / ".claude" / ".credentials.json",
-)
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+
+from tools import config as local_config  # noqa: E402
 
 
 class HostError(RuntimeError):
@@ -37,8 +37,7 @@ def read_agent() -> str:
 
 def _plugin_token() -> str:
     """读取桌面连接器的 GitHub MCP key；只进进程环境，不落盘、不回显。"""
-    raw = os.environ.get("WF_CREDENTIALS")
-    paths = ([Path(raw)] if raw else []) + list(CREDENTIALS_CANDIDATES)
+    paths = local_config.resolve_credentials_candidates()
     for path in paths:
         try:
             data = json.loads(path.read_text(encoding="utf-8"))

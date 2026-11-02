@@ -17,3 +17,18 @@ runtime/
 plans/
 panel/backups/
 legacy/
+
+# 本地配置与面板运行态（不得进开源包）
+settings.json
+.wf/config.local.json
+.wf/backups/
+.wf/logs/
+.wf/cache/
+.wf/panel.lock.json
+panel/state.json
+
+# 宿主/运行时残留
+.venv/
+Cache/
+shell-snapshots/
+*.bak.*

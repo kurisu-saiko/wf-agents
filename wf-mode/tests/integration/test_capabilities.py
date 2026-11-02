@@ -1,4 +1,5 @@
 import importlib.util
+import json
 import sys
 from pathlib import Path
 
@@ -36,7 +37,13 @@ def test_health_reports_pending_and_active():
     assert data["capabilities"]["web_search"]["status"] in {"active", "degraded", "missing"}
 
 
-def test_doctor_reports_runtime_and_hosts():
+def test_doctor_reports_runtime_and_hosts(tmp_path, monkeypatch):
+    config = tmp_path / "config.json"
+    config.write_text(
+        json.dumps({"version": 1, "runtime": {"bin": str(tmp_path), "venv": ""}}),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("WF_CONFIG", str(config))
     data = wf.doctor()
     assert "runtime" in data
     assert data["runtime"]["binExists"] is True

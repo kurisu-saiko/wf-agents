@@ -14,6 +14,7 @@ import os
 import subprocess
 from typing import Any
 
+from tools import config as local_config
 from tools.errors import ToolError
 from tools.util import utc_now
 
@@ -38,9 +39,32 @@ DEFAULTS = {"path": ".", "lang": "python", "maxResults": 5}
 def _runtime(entry: dict[str, Any], runtime: dict[str, Any] | None) -> dict[str, str]:
     runtime = runtime or {}
     return {
-        "WF_BIN": str(os.environ.get("WF_BIN") or runtime.get("bin") or ""),
-        "WF_VENV": str(os.environ.get("WF_VENV") or runtime.get("venv") or ""),
+        "WF_BIN": str(runtime.get("bin") or os.environ.get("WF_BIN") or ""),
+        "WF_VENV": str(runtime.get("venv") or os.environ.get("WF_VENV") or ""),
     }
+
+
+def _subprocess_env(entry: dict[str, Any]) -> dict[str, str]:
+    """只向子进程补充该能力声明的密钥，不注入全部面板密钥。"""
+    env = dict(os.environ)
+    for name in entry.get("env") or []:
+        try:
+            value, _, _ = local_config.resolve_secret(name)
+        except local_config.ConfigError:
+            continue
+        if value:
+            env[name] = value
+    return env
+
+
+def _redact(value: Any) -> Any:
+    if isinstance(value, str):
+        return local_config.redact(value)
+    if isinstance(value, list):
+        return [_redact(item) for item in value]
+    if isinstance(value, dict):
+        return {key: _redact(item) for key, item in value.items()}
+    return value
 
 
 def _template(entry: dict[str, Any], provider: str) -> list[str]:
@@ -150,6 +174,7 @@ def execute(
             errors="replace",
             timeout=timeout,
             shell=False,
+            env=_subprocess_env(capability),
         )
     except FileNotFoundError as exc:
         raise ToolError(
@@ -173,8 +198,8 @@ def execute(
             allow_fallback=True,
         ) from exc
 
-    stdout = proc.stdout or ""
-    stderr = proc.stderr or ""
+    stdout = local_config.redact(proc.stdout or "")
+    stderr = local_config.redact(proc.stderr or "")
     if proc.returncode != 0:
         raise ToolError(
             "UPSTREAM_ERROR",
@@ -186,7 +211,7 @@ def execute(
             },
             allow_fallback=True,
         )
-    return _normalize(action, provider, argv, stdout, stderr)
+    return _normalize(action, provider, _redact(argv), stdout, stderr)
 
 
 def entry_label(entry: dict[str, Any]) -> str:

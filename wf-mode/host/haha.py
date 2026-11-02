@@ -6,15 +6,11 @@ import os
 from pathlib import Path
 
 from host.common import ROOT, HostError, merge_env, render_agent, stream_agent
-
-DEFAULT_SIDECAR = (
-    "D:/claude-code/gui/Claude Code Haha/resources/app.asar.unpacked/"
-    "src-tauri/binaries/claude-sidecar-x86_64-pc-windows-msvc.exe"
-)
+from tools import config as local_config  # noqa: E402
 
 
 def sidecar() -> Path:
-    return Path(os.environ.get("WF_HAHA_SIDECAR") or DEFAULT_SIDECAR)
+    return Path(local_config.resolve_haha_sidecar())
 
 
 def detect() -> bool:

@@ -108,7 +108,7 @@ def valid_wftool_args(rest: str) -> bool:
     if command in READ_ONLY_COMMANDS:
         return len(tokens) <= 2
     if command == "panel":
-        return False
+        return len(tokens) == 2 and tokens[1] in {"--ensure", "--status"}
     if command == "call":
         if len(tokens) < 3:
             return False

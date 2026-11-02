@@ -32,6 +32,12 @@ def test_allows_read_only_commands():
     assert decide("Bash", f'python "{TOOL}" doctor') == "allow"
 
 
+def test_allows_only_idempotent_panel_modes():
+    assert decide("Bash", f'python "{TOOL}" panel --ensure') == "allow"
+    assert decide("Bash", f'python "{TOOL}" panel --status') == "allow"
+    assert decide("Bash", f'python "{TOOL}" panel') == "deny"
+
+
 def test_denies_arbitrary_commands():
     assert decide("Bash", "curl https://example.com") == "deny"
     assert decide("Bash", "git status") == "deny"

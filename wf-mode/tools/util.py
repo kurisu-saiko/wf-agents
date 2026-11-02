@@ -3,20 +3,21 @@
 from __future__ import annotations
 
 import json
-import os
 from datetime import datetime, timezone
 from pathlib import Path
 
 
 def first_env(*names: str) -> tuple[str | None, str]:
-    """按顺序返回第一个非空环境变量及其实际名称。
+    """按顺序返回第一个非空密钥及其实际名称。
 
-    只返回值和变量名，不打印值；用于兼容 TAVILY 与 TAVILY_API_KEY 这类别名。
+    先查面板本地配置，再查环境变量；只返回值和变量名，不打印值。
+    用于兼容 TAVILY 与 TAVILY_API_KEY 这类别名。
     """
-    for name in names:
-        value = os.environ.get(name)
-        if value:
-            return value, name
+    from tools.config import resolve_secret
+
+    value, name, _ = resolve_secret(*names)
+    if value:
+        return value, name
     return None, names[0] if names else ""
 
 

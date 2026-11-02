@@ -27,16 +27,25 @@ def _backup(path: Path) -> Path | None:
     return backup
 
 
+ENTRY_FILES = ("wf.md", "wf-plan.md", "wf-report.md")
+
+
 def install_entry(config_dir: Path, apply: bool) -> list[str]:
-    source = ROOT / "commands" / "wf.md"
-    text = source.read_text(encoding="utf-8").replace("{{WF_ROOT}}", ROOT.as_posix())
-    target = config_dir / "commands" / "wf.md"
-    actions = [f"entry: {target}"]
-    if apply:
-        target.parent.mkdir(parents=True, exist_ok=True)
-        if target.exists():
-            _backup(target)
-        target.write_text(text, encoding="utf-8")
+    actions: list[str] = []
+    for name in ENTRY_FILES:
+        source = ROOT / "commands" / name
+        if not source.is_file():
+            raise HostError(f"缺少命令文件：{source}")
+        text = source.read_text(encoding="utf-8").replace(
+            "{{WF_ROOT}}", ROOT.as_posix()
+        )
+        target = config_dir / "commands" / name
+        actions.append(f"entry: {target}")
+        if apply:
+            target.parent.mkdir(parents=True, exist_ok=True)
+            if target.exists():
+                _backup(target)
+            target.write_text(text, encoding="utf-8")
     return actions
 
 

@@ -4,9 +4,10 @@
 version: 1
 
 runtime:
-  # 安装脚本或环境变量可覆盖；doctor 会报告实际解析路径。
-  bin: "D:/claude-code/tool/.wf-feasibility/bin"
-  venv: "D:/claude-code/tool/.wf-feasibility/venv"
+  # 默认留空；用 .wf/config.local.json 或 WF_BIN/WF_VENV 覆盖。
+  # doctor 会报告实际解析路径。
+  bin: ""
+  venv: ""
 
 capabilities:
   web_search:
