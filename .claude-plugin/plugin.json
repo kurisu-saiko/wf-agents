@@ -1,7 +1,7 @@
 {
   "name": "wf-agents",
   "version": "2.0.0",
-  "description": "通用开源探索、仓库深度分析与装配规划工作流插件（支持双人工闸口、零依赖 MCP 服务与自动生命周期面板）。",
+  "description": "开源复用与工程组装工作流插件（24 工具 Stdio MCP、6 步人机闸口、AST 切片与安全回滚）。",
   "author": {
     "name": "kurisu-saiko",
     "url": "https://github.com/kurisu-saiko/wf-agents"

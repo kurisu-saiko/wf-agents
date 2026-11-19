@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "wf-agents"
 version = "2.0.0"
-description = "Cross-agent research, project analysis, and adoption planning workflow plugin with zero-dependency core and stdio MCP server."
+description = "Human-in-the-loop open-source reuse and engineering assembly workflow plugin with zero-dependency core and 24-tool stdio MCP server."
 readme = "README.md"
 license = { text = "MIT" }
 requires-python = ">=3.10"
@@ -16,7 +16,6 @@ dependencies = [
 [project.optional-dependencies]
 full = [
   "httpx>=0.27",
-  "streamlit>=1.40",
 ]
 dev = [
   "pytest>=8.0",

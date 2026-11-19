@@ -339,12 +339,14 @@ TOOLS: list[dict[str, Any]] = [
     },
     {
         "name": "wf_slice_closure",
-        "description": "Step 4：通过 AST 解析计算目标切片文件的最小内部传递依赖闭包、导出符号、三方依赖与缺失引用检测。",
+        "description": "Step 4：通过 AST 解析计算目标切片文件的最小内部传递依赖闭包（支持本地 sourcePath 或远程 GitHub repo 免克隆拉取）。",
         "inputSchema": {
             "type": "object",
-            "required": ["sourcePath", "targetFiles"],
+            "required": ["targetFiles"],
             "properties": {
-                "sourcePath": {"type": "string", "description": "上游源仓库本地目录"},
+                "sourcePath": {"type": "string", "description": "上游源仓库本地目录（与 repo 二选一）"},
+                "repo": {"type": "string", "description": "远程 GitHub owner/name 或 URL（免克隆按需拉取切片闭包）"},
+                "ref": {"type": "string", "description": "可选 Git 分支、tag 或 commit SHA"},
                 "targetFiles": {"type": "array", "items": {"type": "string"}, "description": "核心切片入口文件相对路径列表"},
                 "sessionId": {"type": "string"},
             },
@@ -353,8 +355,8 @@ TOOLS: list[dict[str, Any]] = [
     {
         "name": "wf_contract_design",
         "description": (
-            "Step 4 / Gate 4 & 5：设计本地对接契约，生成分块变更列表（Chunk A 依赖配置 / Chunk B 切片与 SPDX 合规清单 / "
-            "Chunk C 薄 Adapter 隔离层与冒烟测试）及每文件 unified diff 预览。"
+            "Step 4 / Gate 4 & 5：设计本地对接契约（支持全 5 策略及 Python/TS/JS 原生适配），"
+            "生成分块变更列表（Chunk A/B/C）及每文件 unified diff 预览。"
         ),
         "inputSchema": {
             "type": "object",
@@ -368,6 +370,8 @@ TOOLS: list[dict[str, Any]] = [
                 "candidate": {"type": "object"},
                 "adapterName": {"type": "string"},
                 "sourcePath": {"type": "string"},
+                "repo": {"type": "string", "description": "可选远程 GitHub owner/name"},
+                "ref": {"type": "string", "description": "可选 Git 分支或 tag"},
                 "sliceFiles": {"type": "array", "items": {"type": "string"}},
                 "fileContents": {"type": "object"},
                 "exportedSymbols": {"type": "array", "items": {"type": "string"}},
@@ -498,8 +502,10 @@ def _handle_assembly_or_gate(
 
     if name == "wf_slice_closure":
         res = wf_slicer.compute_slice_closure(
-            str(args.get("sourcePath") or ""),
+            args.get("sourcePath"),
             [str(x) for x in (args.get("targetFiles") or [])],
+            repo=args.get("repo"),
+            ref=args.get("ref"),
         )
         return {"ok": True, **res}, False
 
@@ -510,6 +516,8 @@ def _handle_assembly_or_gate(
             candidate=args.get("candidate") or {},
             adapter_name=str(args.get("adapterName") or ""),
             source_path=args.get("sourcePath"),
+            repo=args.get("repo"),
+            ref=args.get("ref"),
             slice_files=args.get("sliceFiles"),
             file_contents=args.get("fileContents"),
             exported_symbols=args.get("exportedSymbols"),

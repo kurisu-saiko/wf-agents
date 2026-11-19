@@ -1,7 +1,7 @@
 {
   "name": "wf-agents",
   "version": "2.0.0",
-  "description": "通用开源探索、仓库分析与装配规划工作流插件（含内置零依赖 Stdio MCP 与双人工闸口）。",
+  "description": "开源复用与工程组装工作流插件（24 工具零依赖 Stdio MCP、6 步人机闸口、策略评估与安全回滚）。",
   "contextFileName": "rules/AGENTS.md",
   "mcpServers": {
     "wf-agents": {

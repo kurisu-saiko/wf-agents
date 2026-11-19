@@ -1,6 +1,4 @@
 # 本地 provider / 密钥 / 运行态
-cc-haha/
-.claude.json
 .env
 .env.*
 !.env.example
@@ -28,7 +26,6 @@ wf-mode/settings.json
 wf-mode/panel/state.json
 wf-mode/panel/backups/
 wf-mode/runtime/
-wf-mode/agents/wf-agent.md
 Cache/
 shell-snapshots/
 .venv/

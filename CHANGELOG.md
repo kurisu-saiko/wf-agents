@@ -2,12 +2,16 @@
 
 ## 2.0.0
 
-- **跨宿主通用插件架构**：新增 `plugin.json`、`mcp_config.json`、`.claude-plugin/`、`gemini-extension.json`、标准化 `skills/wf*`、`rules/AGENTS.md`、`agents/wf-researcher.md` 与 `assets/logo.svg`。
-- **零依赖 Stdio MCP 服务 (`wf_mcp.py`)**：暴露 16 个结构化工具，原生支持 Antigravity、Claude Code、Cursor、Codex、Gemini CLI 与 OpenCode。
-- **严格且人性化的面板生命周期**：内置轻量 HTTP 配置面板（`panel/server.py` + `panel/ui.html`）冷启动 `<150ms`；仅在首轮交互开启，进入计划模式（`wf_enter_plan` / `enter-plan`）自动优雅关闭。
-- **核心零依赖与稳定性增强**：`http_client.py` 支持 `urllib` 自动回退、指数退避重试与限流诊断；`config.py` 支持 `WF_DATA_DIR` 隔离与 `gh auth token` 自动复用；`cache.py` 移出工作区。
-- **能力全面增强**：新增 DuckDuckGo 零密钥搜索、Direct HTML→Markdown 抽取、免克隆 `repo_ingest`、`repo_health` 维护度与总线因子分析、`package_meta`、`package_security` (OSV CVE 批量扫描)、`license_sbom`、多语言 `dependency_graph` 与 `structural_search` 符号大纲。
-- **双协议 Hook 与跨宿主安装器**：`wf_agent_gate.py` 同时支持 Antigravity 与 Claude Code；`host/install.py` 支持 9 类宿主一键预览与安装。
+- **定位演进：人机协同的开源复用与工程组装流水线**：从“只读调研报告工具”全面演进为覆盖 **发现候选 → 合规/健康评估 → 5 选 1 复用策略 → 本地对接契约 → 检查点与分块落盘 → 闭环验证/回滚**（`GATE_1`～`GATE_6`）的工程闭环系统。
+- **决策账本与四问输出协议**：新增 `.wf/decisions/` 持久化账本与 `ADR-<session>.md` 自动渲染（`ledger.py`）；引入决策导向四问协议 `DecisionBrief`（`envelope.py`）。
+- **5 选 1 策略评估与工程组装内核（`wf-mode/tools/assembly/`）**：
+  - `strategy.py`：量化对比 `PACKAGE_DEP` / `CODE_SLICE` / `VENDORING` / `SIDECAR` / `PATTERN_REF`。
+  - `profiler.py` & `slicer.py`：本地项目画像 + Python/JS/TS AST 最小传递依赖闭包提取，原生支持**远程 GitHub 仓库免克隆按需切片**。
+  - `contract.py` & `verifier.py`：支持 Python 及 TypeScript/JavaScript 原生 Adapter 生成，并补齐 `SIDECAR`（`docker-compose.sidecar.yml` + `SidecarClient`）与 `PATTERN_REF`（Clean-Room 规约 + 骨架）。
+  - `checkpoint.py` & `patcher.py` & `provenance.py`：强制校验 `GATE_4/5` 批准，自动备份 `.wf/checkpoints/` 快照以支持 1 秒精确回滚，幂等注入 SPDX 头并维护 `THIRD_PARTY_NOTICES.md`。
+- **24 工具零依赖 Stdio MCP 服务（`wf_mcp.py`）与统一安装器（`install.py`）**：统一分发 4 个标准 Skills（`wf`、`wf-plan`、`wf-assemble`、`wf-report`），适配 Antigravity、Claude Code、Cursor、Codex、Gemini CLI、OpenCode 与 Generic 宿主。
+- **严格且人性化的面板生命周期**：内置 `ThreadingHTTPServer` 面板（`panel/server.py` + `ui.html`）冷启动 `<150ms`；仅首次互动弹出，过 `GATE_1` / `wf_enter_plan` 时自动优雅关闭。
+- **四层测试体系**：建立 L1 模块测试、L2 闸口/回滚集成测试、L3 真实 MCP 握手验证与 L4 端到端评估基准。
 
 ## 1.0.0
 

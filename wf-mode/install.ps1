@@ -1,5 +1,5 @@
 param(
-  [ValidateSet("antigravity", "claude", "cursor", "codex", "gemini", "opencode", "haha", "dsh", "generic")]
+  [ValidateSet("antigravity", "claude", "cursor", "codex", "gemini", "opencode", "generic")]
   [string]$HostName = "antigravity",
   [string]$Target = "",
   [string]$ConfigDir = "",

@@ -52,7 +52,7 @@ def _detect_layout(root: Path, files: list[str], primary_lang: str) -> dict[str,
         if p.is_dir()
         and p.name not in repo_utils.IGNORE_DIRS
         and not p.name.startswith(".")
-        and p.name not in {"tests", "test", "docs", "scripts"}
+        and p.name not in {"tests", "test", "docs", "scripts", "adapters"}
     ]
 
     if has_src_dir:

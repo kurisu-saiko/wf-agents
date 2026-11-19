@@ -178,3 +178,81 @@ def test_golden_benchmark_slice_assemble_verify_and_rollback(tmp_path):
     rb = checkpoint.rollback_checkpoint(local_repo, applied["checkpointId"])
     assert rb["status"] == "rolled_back"
     assert _git(local_repo, "status", "--porcelain") == ""
+
+
+def test_js_ts_native_adapter_sidecar_and_pattern_ref_benchmarks(tmp_path):
+    # 1. JS ES Module 原生切片组装与 Node 验证闭环
+    js_proj = tmp_path / "js_web_app"
+    js_proj.mkdir()
+    (js_proj / "package.json").write_text('{"name":"js-web-app","type":"module"}\n', encoding="utf-8")
+    (js_proj / "index.js").write_text("console.log('app');\n", encoding="utf-8")
+
+    js_upstream = tmp_path / "js_upstream"
+    js_upstream.mkdir()
+    (js_upstream / "slug.mjs").write_text(
+        "import { norm } from './helper.mjs';\nexport function slugify(s) { return norm(s).replace(/ /g, '-'); }\n",
+        encoding="utf-8",
+    )
+    (js_upstream / "helper.mjs").write_text(
+        "export function norm(s) { return String(s).trim().toLowerCase(); }\n",
+        encoding="utf-8",
+    )
+
+    js_ct = contract.design_integration_contract(
+        project_path=js_proj,
+        strategy="CODE_SLICE",
+        candidate={"name": "js-slug", "repo": "org/js-slug", "license": "MIT", "version": "1.0.0"},
+        adapter_name="js_slug",
+        source_path=js_upstream,
+        slice_files=["slug.mjs"],
+    )
+    assert js_ct["primaryLanguage"] == "JavaScript"
+    assert js_ct["adapterFile"].endswith("_adapter.mjs")
+    assert js_ct["smokeTestFile"].endswith("_smoke.mjs")
+    ledger.commit_gate(js_proj, gate="GATE_4", summary="批准 JS 契约", session_id="s-js")
+    patcher.apply_assembly_contract(project_path=js_proj, contract=js_ct, session_id="s-js")
+    js_verify = verifier.run_verification(project_path=js_proj, contract=js_ct)
+    assert js_verify["passed"] is True
+
+    # 2. SIDECAR 伴生服务隔离策略契约（Docker Compose + SidecarClient）
+    py_proj = tmp_path / "py_service"
+    py_proj.mkdir()
+    (py_proj / "app.py").write_text("x = 1\n", encoding="utf-8")
+
+    sc_ct = contract.design_integration_contract(
+        project_path=py_proj,
+        strategy="SIDECAR",
+        candidate={"name": "ocr-engine", "language": "Go", "license": "Apache-2.0", "version": "2.1.0"},
+        adapter_name="ocr_sidecar",
+    )
+    assert any(item["path"] == "docker-compose.sidecar.yml" for item in sc_ct["chunks"]["A_dependency_and_config"])
+    ledger.commit_gate(py_proj, gate="GATE_4", summary="批准 Sidecar", session_id="s-sc")
+    patcher.apply_assembly_contract(project_path=py_proj, contract=sc_ct, session_id="s-sc")
+    sc_verify = verifier.run_verification(project_path=py_proj, contract=sc_ct)
+    assert sc_verify["passed"] is True
+
+    # 3. PATTERN_REF 净室参考重写契约（仅提取签名生成 Clean-Room Spec + 零版权骨架）
+    agpl_ref = tmp_path / "agpl_upstream"
+    agpl_ref.mkdir()
+    (agpl_ref / "algo.py").write_text(
+        "SECRET_PROPRIETARY_BODY = 42\n\ndef fast_score(items: list, weight: float) -> float:\n    return sum(items) * weight + SECRET_PROPRIETARY_BODY\n",
+        encoding="utf-8",
+    )
+    pr_ct = contract.design_integration_contract(
+        project_path=py_proj,
+        strategy="PATTERN_REF",
+        candidate={"name": "agpl-scorer", "language": "Python", "license": "AGPL-3.0", "version": "0.9.0"},
+        adapter_name="clean_scorer",
+        source_path=agpl_ref,
+        slice_files=["algo.py"],
+    )
+    chunk_b_paths = [item["path"] for item in pr_ct["chunks"]["B_code_and_provenance"]]
+    assert "adapters/clean_scorer_cleanroom_spec.md" in chunk_b_paths
+    adapter_entry = [item for item in pr_ct["chunks"]["C_adapter_and_smoke_test"] if item["role"] == "cleanroom_skeleton_adapter"][0]
+    assert "SECRET_PROPRIETARY_BODY" not in adapter_entry["content"]
+    assert "def fast_score(items, weight):" in adapter_entry["content"]
+    ledger.commit_gate(py_proj, gate="GATE_4", summary="批准 Clean-Room 骨架", session_id="s-pr")
+    patcher.apply_assembly_contract(project_path=py_proj, contract=pr_ct, session_id="s-pr")
+    pr_verify = verifier.run_verification(project_path=py_proj, contract=pr_ct)
+    assert pr_verify["passed"] is True
+

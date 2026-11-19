@@ -180,3 +180,39 @@ def test_provenance_spdx_injection_and_notices_idempotent(tmp_path):
     notice_text = (tmp_path / "THIRD_PARTY_NOTICES.md").read_text(encoding="utf-8")
     assert notice_text.count("## mod-lib") == 1
     assert "v1.2.4" in notice_text
+
+
+def test_remote_repo_on_demand_slicing_and_signatures(tmp_path, monkeypatch):
+    monkeypatch.setenv("WF_DATA_DIR", str(tmp_path / "wf_data"))
+    remote_files = {
+        "pkg/__init__.py": "",
+        "pkg/core.py": "from .util import clean_str\n\ndef normalize(name: str, strip_dash: bool = False) -> str:\n    return clean_str(name)\n",
+        "pkg/util.py": "def clean_str(s: str) -> str:\n    return s.strip()\n",
+        "pkg/unused.py": "BIG_UNUSED_BLOB = 'x' * 1000\n",
+    }
+    fetched: list[str] = []
+
+    def fake_fetcher(rel: str):
+        fetched.append(rel)
+        return remote_files.get(rel)
+
+    res = slicer.compute_slice_closure(
+        None,
+        ["pkg/core.py"],
+        repo="org/demo-repo",
+        ref="v2.0",
+        fetcher=fake_fetcher,
+    )
+    assert res["staged"] is True
+    assert res["repo"] == "org/demo-repo"
+    assert res["ref"] == "v2.0"
+    assert res["closureComplete"] is True
+    assert res["closureFiles"] == ["pkg/core.py", "pkg/util.py"]
+    assert "pkg/unused.py" not in fetched
+    assert "normalize" in res["exportedSymbols"]
+
+    sigs = slicer.extract_symbol_signatures({"pkg/core.py": remote_files["pkg/core.py"]})
+    assert sigs == [
+        {"kind": "function", "name": "normalize", "args": ["name", "strip_dash"], "file": "pkg/core.py"}
+    ]
+

@@ -156,8 +156,8 @@ def _validate(data: dict[str, Any]) -> None:
         if port is not None and (not isinstance(port, int) or isinstance(port, bool) or not 1024 <= port <= 65535):
             raise ConfigError("panel.port 必须是 1024–65535 的整数")
         backend = panel.get("backend")
-        if backend is not None and backend not in {"builtin", "streamlit"}:
-            raise ConfigError("panel.backend 必须是 builtin 或 streamlit")
+        if backend is not None and backend != "builtin":
+            raise ConfigError("panel.backend 必须是 builtin")
         auto_open_once = panel.get("auto_open_once")
         if auto_open_once is not None and not isinstance(auto_open_once, bool):
             raise ConfigError("panel.auto_open_once 必须是布尔值")
@@ -200,47 +200,6 @@ def resolve_secret(*names: str) -> tuple[str | None, str, str]:
         if token:
             return token, names[0], "gh-cli"
     return None, names[0] if names else "", "none"
-
-
-def resolve_credentials_candidates() -> list[Path]:
-    """凭据文件候选顺序：WF_CREDENTIALS > 本地配置 credentials > 用户默认目录。"""
-    candidates: list[Path] = []
-    raw = os.environ.get("WF_CREDENTIALS")
-    if raw:
-        candidates.append(Path(raw))
-    try:
-        configured = load_config().get("credentials")
-    except ConfigError:
-        configured = None
-    if isinstance(configured, str) and configured:
-        candidates.append(Path(configured))
-    candidates.append(Path.home() / ".claude" / ".credentials.json")
-
-    unique: list[Path] = []
-    seen: set[Path] = set()
-    for path in candidates:
-        if path not in seen:
-            seen.add(path)
-            unique.append(path)
-    return unique
-
-
-def resolve_credentials_path() -> Path:
-    """凭据文件首选路径；无可用候选时回退到用户默认目录。"""
-    candidates = resolve_credentials_candidates()
-    return candidates[0] if candidates else Path.home() / ".claude" / ".credentials.json"
-
-
-def resolve_haha_sidecar() -> str:
-    """Haha sidecar 路径：WF_HAHA_SIDECAR > 本地配置 haha_sidecar > 空字符串。"""
-    raw = os.environ.get("WF_HAHA_SIDECAR")
-    if raw:
-        return raw
-    try:
-        configured = load_config().get("haha_sidecar")
-    except ConfigError:
-        configured = None
-    return configured if isinstance(configured, str) and configured else ""
 
 
 def secret_values() -> list[str]:
