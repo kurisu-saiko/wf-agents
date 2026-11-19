@@ -1,0 +1,21 @@
+{
+  "name": "wf-agents",
+  "displayName": "WF Agents",
+  "version": "2.0.0",
+  "description": "通用开源探索、仓库深度分析、依赖漏洞与许可证审计工作流插件（双人工闸口 + 智能配置面板生命周期）。",
+  "author": {
+    "name": "kurisu-saiko",
+    "url": "https://github.com/kurisu-saiko/wf-agents"
+  },
+  "homepage": "https://github.com/kurisu-saiko/wf-agents",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/kurisu-saiko/wf-agents.git"
+  },
+  "logo": "assets/logo.svg",
+  "suggestedPrompts": [
+    "/wf 寻找适合当前项目的开源工具方案并给出可落地的装配建议",
+    "/wf 对比开源候选的许可证、维护活跃度与 CVE 漏洞并输出采用方案",
+    "/wf 分析当前仓库架构、模块依赖与潜在风险，评估社区替代方案"
+  ]
+}

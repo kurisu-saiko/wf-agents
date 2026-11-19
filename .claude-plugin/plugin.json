@@ -1,0 +1,11 @@
+{
+  "name": "wf-agents",
+  "version": "2.0.0",
+  "description": "通用开源探索、仓库深度分析与装配规划工作流插件（支持双人工闸口、零依赖 MCP 服务与自动生命周期面板）。",
+  "author": {
+    "name": "kurisu-saiko",
+    "url": "https://github.com/kurisu-saiko/wf-agents"
+  },
+  "repository": "https://github.com/kurisu-saiko/wf-agents",
+  "license": "MIT"
+}

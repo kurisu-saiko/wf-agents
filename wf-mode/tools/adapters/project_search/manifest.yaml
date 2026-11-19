@@ -1,5 +1,5 @@
 slot: project_search
-version: "0.1.0"
+version: "0.2.0"
 license: GitHub-API-Terms
 os:
   - windows
@@ -8,6 +8,7 @@ os:
 actions:
   - search
   - lookup
+  - search_code
   - health
 providers:
   github:
@@ -24,6 +25,6 @@ credentials:
 writeSurface: []
 timeoutMs: 20000
 retry:
-  max: 1
-  backoffMs: 300
-notes: GitHub 公共 API 无 token 也可用，令牌只提高限流额度。
+  max: 2
+  backoffMs: 500
+notes: GitHub 仓库发现、详细元数据与代码搜索，自动复用 gh CLI / 环境变量令牌。

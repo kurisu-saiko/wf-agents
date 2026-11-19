@@ -1,0 +1,28 @@
+slot: repo_health
+version: "0.2.0"
+license: GitHub-API-Terms
+os:
+  - windows
+  - linux
+  - macos
+actions:
+  - analyze
+  - health
+providers:
+  github:
+    role: primary
+    env:
+      - GITHUB_TOKEN
+      - GH_TOKEN
+      - GITHUB_MCP_TOKEN
+    endpoint: https://api.github.com
+credentials:
+  - GITHUB_TOKEN
+  - GH_TOKEN
+  - GITHUB_MCP_TOKEN
+writeSurface: []
+timeoutMs: 25000
+retry:
+  max: 2
+  backoffMs: 500
+notes: 基于 GitHub 提交节奏、近期作者分布、Release 与许可证类别给出维护健康度与风险标记。

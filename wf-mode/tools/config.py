@@ -1,6 +1,6 @@
 """本地配置：面板保存的密钥、provider 顺序与工具路径。
 
-优先级：本地配置 > 环境变量 > capabilities.yaml。
+优先级：本地配置 > 环境变量 > gh CLI（仅 GitHub token） > capabilities.yaml。
 只负责读取、合并与原子写入；密钥不打印、不写日志。
 """
 
@@ -9,35 +9,100 @@ from __future__ import annotations
 import json
 import os
 import shutil
+import subprocess
 from datetime import datetime
 from pathlib import Path
 from typing import Any
 
 ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_PATH = ROOT / ".wf" / "config.local.json"
-BACKUP_DIR = ROOT / ".wf" / "backups"
+_DEFAULT_BACKUP_DIR = ROOT / ".wf" / "backups"
+BACKUP_DIR = _DEFAULT_BACKUP_DIR
+
+GITHUB_TOKEN_NAMES = ("GITHUB_TOKEN", "GH_TOKEN", "GITHUB_MCP_TOKEN")
 
 SECRET_ENV_NAMES = (
     "TAVILY_API_KEY",
     "TAVILY",
     "EXA_API_KEY",
     "EXA",
+    "BRAVE_API_KEY",
+    "BRAVE",
+    "SEARXNG_URL",
     "FIRECRAWL_API_KEY",
     "FIRECRAWL",
     "JINA_API_KEY",
     "JINA",
-    "GITHUB_TOKEN",
-    "GH_TOKEN",
-    "GITHUB_MCP_TOKEN",
+    *GITHUB_TOKEN_NAMES,
 )
+
+_GH_TOKEN_CACHE: dict[str, Any] = {"checked": False, "token": None}
 
 
 class ConfigError(Exception):
     """本地配置不合法或无法读取。"""
 
 
+def data_dir() -> Path:
+    """返回可写运行数据目录，绝不污染被分析的宿主工作区。"""
+    for env_name in ("WF_DATA_DIR", "PLUGIN_DATA"):
+        raw = os.environ.get(env_name, "").strip()
+        if raw:
+            return Path(raw)
+    return ROOT / ".wf"
+
+
 def config_path(path: str | Path | None = None) -> Path:
-    return Path(path or os.environ.get("WF_CONFIG") or DEFAULT_PATH)
+    if path is not None:
+        return Path(path)
+    raw = os.environ.get("WF_CONFIG", "").strip()
+    if raw:
+        return Path(raw)
+    if os.environ.get("WF_DATA_DIR", "").strip() or os.environ.get("PLUGIN_DATA", "").strip():
+        return data_dir() / "config.local.json"
+    return DEFAULT_PATH
+
+
+def _backup_dir() -> Path:
+    if BACKUP_DIR != _DEFAULT_BACKUP_DIR:
+        return BACKUP_DIR
+    return data_dir() / "backups"
+
+
+def _gh_cli_disabled() -> bool:
+    return os.environ.get("WF_DISABLE_GH_CLI", "").strip().lower() in {"1", "true", "yes"}
+
+
+def _gh_cli_token() -> str | None:
+    if _gh_cli_disabled():
+        return None
+    if _GH_TOKEN_CACHE["checked"]:
+        return _GH_TOKEN_CACHE["token"]
+    _GH_TOKEN_CACHE["checked"] = True
+    gh = shutil.which("gh")
+    if not gh:
+        _GH_TOKEN_CACHE["token"] = None
+        return None
+    try:
+        proc = subprocess.run(
+            [gh, "auth", "token"],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=3,
+        )
+        token = (proc.stdout or "").strip()
+        _GH_TOKEN_CACHE["token"] = token if proc.returncode == 0 and token else None
+    except (OSError, subprocess.TimeoutExpired):
+        _GH_TOKEN_CACHE["token"] = None
+    return _GH_TOKEN_CACHE["token"]
+
+
+def reset_gh_token_cache() -> None:
+    """仅供测试重置内存缓存。"""
+    _GH_TOKEN_CACHE["checked"] = False
+    _GH_TOKEN_CACHE["token"] = None
 
 
 def _validate(data: dict[str, Any]) -> None:
@@ -88,8 +153,14 @@ def _validate(data: dict[str, Any]) -> None:
         if not isinstance(panel, dict):
             raise ConfigError("panel 必须是对象")
         port = panel.get("port")
-        if port is not None and (not isinstance(port, int) or not 1024 <= port <= 65535):
+        if port is not None and (not isinstance(port, int) or isinstance(port, bool) or not 1024 <= port <= 65535):
             raise ConfigError("panel.port 必须是 1024–65535 的整数")
+        backend = panel.get("backend")
+        if backend is not None and backend not in {"builtin", "streamlit"}:
+            raise ConfigError("panel.backend 必须是 builtin 或 streamlit")
+        auto_open_once = panel.get("auto_open_once")
+        if auto_open_once is not None and not isinstance(auto_open_once, bool):
+            raise ConfigError("panel.auto_open_once 必须是布尔值")
 
 
 def load_config(path: str | Path | None = None) -> dict[str, Any]:
@@ -111,7 +182,7 @@ def load_config(path: str | Path | None = None) -> dict[str, Any]:
 def resolve_secret(*names: str) -> tuple[str | None, str, str]:
     """按名称顺序解析密钥，返回 (值, 实际名称, 来源)。
 
-    来源：panel（本地配置）/ env（环境变量）/ none。
+    来源：panel（本地配置）/ env（环境变量）/ gh-cli（本机 gh 登录态）/ none。
     配置优先于环境变量，保证面板保存后立即生效。
     """
     data = load_config()
@@ -124,6 +195,10 @@ def resolve_secret(*names: str) -> tuple[str | None, str, str]:
         value = os.environ.get(name)
         if value:
             return value, name, "env"
+    if any(name in GITHUB_TOKEN_NAMES for name in names):
+        token = _gh_cli_token()
+        if token:
+            return token, names[0], "gh-cli"
     return None, names[0] if names else "", "none"
 
 
@@ -180,6 +255,9 @@ def secret_values() -> list[str]:
         value = os.environ.get(name)
         if value and len(value) >= 4:
             values.append(value)
+    gh_token = _GH_TOKEN_CACHE.get("token")
+    if isinstance(gh_token, str) and len(gh_token) >= 4:
+        values.append(gh_token)
     return values
 
 
@@ -242,9 +320,10 @@ def save_config(data: dict[str, Any], path: str | Path | None = None) -> Path:
     target = config_path(path)
     target.parent.mkdir(parents=True, exist_ok=True)
     if target.is_file():
-        BACKUP_DIR.mkdir(parents=True, exist_ok=True)
+        bdir = _backup_dir()
+        bdir.mkdir(parents=True, exist_ok=True)
         stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
-        shutil.copy2(target, BACKUP_DIR / f"config-{stamp}.json")
+        shutil.copy2(target, bdir / f"config-{stamp}.json")
     temp = target.with_name(target.name + ".tmp")
     temp.write_text(
         json.dumps(data, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"

@@ -1,0 +1,26 @@
+slot: dependency_graph
+version: "0.2.0"
+license: MIT
+os:
+  - windows
+  - linux
+  - macos
+actions:
+  - graph
+  - analyze
+  - health
+providers:
+  builtin:
+    role: primary
+    env: []
+  pydeps:
+    role: alternate
+    env: []
+    notes: 可选 pydeps CLI 备选。
+credentials: []
+writeSurface: []
+timeoutMs: 25000
+retry:
+  max: 1
+  backoffMs: 200
+notes: 零依赖多语言（Python AST / JS-TS / Go / Rust）模块依赖图、循环依赖与架构摘要。

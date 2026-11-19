@@ -1,0 +1,27 @@
+slot: package_security
+version: "0.2.0"
+license: Apache-2.0
+os:
+  - windows
+  - linux
+  - macos
+actions:
+  - scan
+  - query
+  - health
+providers:
+  osv:
+    role: primary
+    env: []
+    endpoint: https://api.osv.dev/v1
+  scorecard:
+    role: alternate
+    env: []
+    notes: 可选 OpenSSF Scorecard CLI 备选。
+credentials: []
+writeSurface: []
+timeoutMs: 30000
+retry:
+  max: 2
+  backoffMs: 500
+notes: 通过 OSV.dev 公共漏洞库检测单包或本地/GitHub 仓库依赖的已知 CVE/GHSA，无需外部二进制。

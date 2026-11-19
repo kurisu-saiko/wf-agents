@@ -1,11 +1,12 @@
-"""wf-agent 的 PreToolUse 权限闸门。
+"""wf-agent 的 PreToolUse 权限闸门（同时兼容 Claude Code 与 Antigravity Hook 协议）。
 
 只放行：
-- `python .../tools/wf-tool.py list|health|doctor|call ...`；
+- `python .../tools/wf-tool.py list|health|doctor|panel --ensure|--status|--close|--stop|call ...`；
+- `python .../tools/wf_stage.py init|calibrate|enter-plan|enter-report|close|status|research ...`；
 - 能力目录中已登记、非 pending、非写类能力的动作。
 
 拒绝：
-- Write/Edit/MultiEdit/NotebookEdit；
+- Write/Edit/MultiEdit/NotebookEdit/write_file/edit_file；
 - 任意其它 shell 命令、curl/git/npm/pip；
 - shell 操作符与路径穿越；
 - 写类能力（计划模式下）。
@@ -19,21 +20,24 @@ import re
 import shlex
 import sys
 from pathlib import Path
+from typing import Any
 
 WF_ROOT = Path(__file__).resolve().parents[1]
 EXPECTED_TOOL = (WF_ROOT / "tools" / "wf-tool.py").resolve()
+EXPECTED_STAGE = (WF_ROOT / "tools" / "wf_stage.py").resolve()
 CATALOG = WF_ROOT / "capabilities.yaml"
 AGENT_NAME = "wf-agent"
 
 SHELL_OPS = re.compile(r"[;&|`]|\$\(|\r|\n|[<>]")
-WF_TOOL_RE = re.compile(
+SCRIPT_RE = re.compile(
     r'^(?:python(?:\d+(?:\.\d+)*)?|py)(?:\.exe)?(?:\s+-3)?\s+'
-    r'(?:"([^"]*wf-tool\.py)"|\'([^\']*wf-tool\.py)\'|(\S*wf-tool\.py))'
-    r'\s+(.+)$',
+    r'(?:"([^"]*(?:wf-tool|wf_stage)\.py)"|\'([^\']*(?:wf-tool|wf_stage)\.py)\'|(\S*(?:wf-tool|wf_stage)\.py))'
+    r'(?:\s+(.*))?$',
     re.I,
 )
+_PATH_TRAVERSAL_RE = re.compile(r"(?:^|[\\/])\.\.(?:$|[\\/])")
+_PATH_FLAGS = {"--path", "--destination", "--template"}
 
-# 计划模式禁止会写文件或改变系统的能力；执行阶段再通过 WF_ALLOW_WRITE=1 放开。
 WRITE_CAPABILITIES = {
     "scaffold",
     "repo_fetch",
@@ -43,30 +47,42 @@ WRITE_CAPABILITIES = {
     "managed_platform",
 }
 READ_ONLY_COMMANDS = {"list", "health", "doctor"}
+STAGE_COMMANDS = {"init", "calibrate", "enter-plan", "enter-report", "close", "status"}
+WRITE_TOOLS = {"Write", "Edit", "MultiEdit", "NotebookEdit", "write_file", "edit_file"}
+SHELL_TOOLS = {"Bash", "PowerShell", "run_command"}
 
 
-def emit(decision: str, reason: str) -> None:
-    payload = json.dumps(
-        {
-            "hookSpecificOutput": {
-                "hookEventName": "PreToolUse",
-                "permissionDecision": decision,
-                "permissionDecisionReason": reason,
-            }
-        },
-        ensure_ascii=False,
-    ).encode("utf-8")
+def emit(decision: str, reason: str, protocol: str = "claude") -> None:
+    if protocol == "antigravity":
+        payload = json.dumps(
+            {
+                "decision": decision,
+                "reason": reason,
+            },
+            ensure_ascii=False,
+        ).encode("utf-8")
+    else:
+        payload = json.dumps(
+            {
+                "hookSpecificOutput": {
+                    "hookEventName": "PreToolUse",
+                    "permissionDecision": decision,
+                    "permissionDecisionReason": reason,
+                }
+            },
+            ensure_ascii=False,
+        ).encode("utf-8")
     sys.stdout.buffer.write(payload + b"\n")
     sys.stdout.buffer.flush()
     sys.exit(0)
 
 
-def deny(reason: str) -> None:
-    emit("deny", reason)
+def deny(reason: str, protocol: str = "claude") -> None:
+    emit("deny", reason, protocol)
 
 
-def allow() -> None:
-    emit("allow", "")
+def allow(protocol: str = "claude") -> None:
+    emit("allow", "", protocol)
 
 
 def resolve(value: str, cwd: Path) -> Path | None:
@@ -96,29 +112,26 @@ def load_capabilities() -> dict:
     return data.get("capabilities") or {}
 
 
-def valid_wftool_args(rest: str) -> bool:
-    try:
-        tokens = shlex.split(rest.replace("\\", "/"), posix=True)
-    except ValueError:
-        return False
-    if not tokens:
-        return False
+def _has_path_traversal(tokens: list[str]) -> bool:
+    for idx, tok in enumerate(tokens):
+        key = tok.split("=", 1)[0]
+        if key in _PATH_FLAGS:
+            val = tok.split("=", 1)[1] if "=" in tok else (tokens[idx + 1] if idx + 1 < len(tokens) else "")
+            if _PATH_TRAVERSAL_RE.search(val.strip()):
+                return True
+        if tok == "--json" and idx + 1 < len(tokens):
+            try:
+                obj = json.loads(tokens[idx + 1])
+            except ValueError:
+                obj = {}
+            if isinstance(obj, dict):
+                for pk in ("path", "destination", "template"):
+                    if _PATH_TRAVERSAL_RE.search(str(obj.get(pk) or "")):
+                        return True
+    return False
 
-    command = tokens[0]
-    if command in READ_ONLY_COMMANDS:
-        return len(tokens) <= 2
-    if command == "panel":
-        return len(tokens) == 2 and tokens[1] in {"--ensure", "--status"}
-    if command == "call":
-        if len(tokens) < 3:
-            return False
-        capability, action = tokens[1], tokens[2]
-    else:
-        # 兼容旧式 <capability> <action>
-        if len(tokens) < 2:
-            return False
-        capability, action = tokens[0], tokens[1]
 
+def _allowed_capability_action(capability: str, action: str) -> bool:
     caps = load_capabilities()
     entry = caps.get(capability)
     if not isinstance(entry, dict):
@@ -132,40 +145,96 @@ def valid_wftool_args(rest: str) -> bool:
     return True
 
 
-def check(data: dict, cwd: Path) -> None:
+def valid_wftool_args(rest: str) -> bool:
+    try:
+        tokens = shlex.split(rest.replace("\\", "/"), posix=True)
+    except ValueError:
+        return False
+    if not tokens or _has_path_traversal(tokens):
+        return False
+
+    command = tokens[0]
+    if command in READ_ONLY_COMMANDS:
+        return len(tokens) <= 2
+    if command == "panel":
+        return len(tokens) >= 2 and all(
+            t in {"--ensure", "--status", "--close", "--stop", "--once", "--no-open"} for t in tokens[1:]
+        ) and any(t in {"--ensure", "--status", "--close", "--stop"} for t in tokens[1:])
+    if command == "call":
+        if len(tokens) < 3:
+            return False
+        capability, action = tokens[1], tokens[2]
+    else:
+        if len(tokens) < 2:
+            return False
+        capability, action = tokens[0], tokens[1]
+
+    return _allowed_capability_action(capability, action)
+
+
+def valid_stage_args(rest: str) -> bool:
+    try:
+        tokens = shlex.split(rest.replace("\\", "/"), posix=True)
+    except ValueError:
+        return False
+    if not tokens or _has_path_traversal(tokens):
+        return False
+    command = tokens[0]
+    if command in STAGE_COMMANDS:
+        return True
+    if command == "research":
+        if len(tokens) < 3:
+            return False
+        return _allowed_capability_action(tokens[1], tokens[2])
+    return False
+
+
+def _extract_protocol_and_tool(data: dict[str, Any]) -> tuple[str, str, str]:
+    if isinstance(data.get("toolCall"), dict):
+        tc = data["toolCall"]
+        tool = str(tc.get("name") or "")
+        args = tc.get("args") or {}
+        cmd = str(args.get("CommandLine") or args.get("command") or "").strip()
+        return "antigravity", tool, cmd
     tool = str(data.get("tool_name") or "")
+    cmd = str((data.get("tool_input") or {}).get("command") or "").strip()
+    return "claude", tool, cmd
 
-    if tool in {"Write", "Edit", "MultiEdit", "NotebookEdit"}:
-        deny("wf-agent 处于计划模式，不允许写文件或改文件。")
 
-    if tool not in {"Bash", "PowerShell"}:
-        # Read/Grep/Glob 与 MCP 工具由 agent 的 tools 白名单约束。
+def check(data: dict[str, Any], cwd: Path) -> None:
+    protocol, tool, cmd = _extract_protocol_and_tool(data)
+
+    if tool in WRITE_TOOLS:
+        deny("wf-agent 处于只读模式，不允许写文件或改文件。", protocol)
+
+    if tool not in SHELL_TOOLS:
         sys.exit(0)
 
-    cmd = str((data.get("tool_input") or {}).get("command") or "").strip()
     if not cmd:
-        deny("空命令。")
+        deny("空命令。", protocol)
     if SHELL_OPS.search(cmd):
-        deny("命令包含不允许的 shell 操作符（; | & 反引号 $() 重定向 或换行）。")
-    if ".." in cmd:
-        deny("禁止路径穿越（..）。")
+        deny("命令包含不允许的 shell 操作符（; | & 反引号 $() 重定向 或换行）。", protocol)
 
-    match = WF_TOOL_RE.match(cmd)
+    match = SCRIPT_RE.match(cmd)
     if not match:
         deny(
-            "只允许通过 wf-tool.py 调用能力。"
-            " 例如：python \".../tools/wf-tool.py\" call project_search search --query \"...\""
+            "只允许通过 wf-tool.py 或 wf_stage.py 调用能力。",
+            protocol,
         )
 
     raw_path = match.group(1) or match.group(2) or match.group(3) or ""
+    rest = (match.group(4) or "").strip()
     target = resolve(raw_path, cwd)
-    if target != EXPECTED_TOOL:
-        deny("只允许调用本插件的 tools/wf-tool.py。")
-
-    if not valid_wftool_args(match.group(4).strip()):
-        deny("wf-tool 子命令不在允许范围内：仅限已登记、非 pending、非写类能力的动作。")
-
-    allow()
+    if target == EXPECTED_TOOL:
+        if not valid_wftool_args(rest):
+            deny("wf-tool 子命令不在允许范围内：仅限已登记、非 pending、非写类能力的动作。", protocol)
+        allow(protocol)
+    elif target == EXPECTED_STAGE:
+        if not valid_stage_args(rest):
+            deny("wf_stage 子命令不在允许范围内。", protocol)
+        allow(protocol)
+    else:
+        deny("只允许调用本插件的 tools/wf-tool.py 或 tools/wf_stage.py。", protocol)
 
 
 def main() -> None:

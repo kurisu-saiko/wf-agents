@@ -1,6 +1,6 @@
 slot: web_extract
-version: "0.1.0"
-license: commercial-api
+version: "0.2.0"
+license: commercial-api-and-public
 os:
   - windows
   - linux
@@ -21,6 +21,10 @@ providers:
       - JINA_API_KEY
       - JINA
     endpoint: https://r.jina.ai/
+  direct:
+    role: alternate
+    env: []
+    notes: 零密钥内置直抓与 HTML->Markdown 解析器，并自动将 GitHub blob 链接转为 raw。
 credentials:
   - FIRECRAWL_API_KEY
   - FIRECRAWL
@@ -29,6 +33,6 @@ credentials:
 writeSurface: []
 timeoutMs: 30000
 retry:
-  max: 1
-  backoffMs: 300
-notes: Jina 可无密钥使用；Firecrawl 无密钥时自动降级到 Jina。
+  max: 2
+  backoffMs: 500
+notes: Firecrawl -> Jina -> Direct 三级正文抽取链。

@@ -2,6 +2,7 @@
 
 约束：
 - 只接受 argv 数组，不经过 shell；
+- 跨平台自动回退探测：cli_paths > WF_BIN/WF_VENV (Windows Scripts/*.exe / POSIX bin/*) > PATH；
 - 只替换声明的占位符；
 - 超时、非零退出、不可解析输出都显式报错；
 - 输出统一归一化为 JSON 或文本。
@@ -11,7 +12,9 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 import subprocess
+from pathlib import Path
 from typing import Any
 
 from tools import config as local_config
@@ -21,7 +24,6 @@ from tools.util import utc_now
 DEFAULT_TIMEOUT = 60
 MAX_TEXT = 20000
 
-# 占位符 -> payload 键；缺省值按需补。
 PLACEHOLDER_KEYS = {
     "path": "path",
     "repo": "repo",
@@ -79,7 +81,36 @@ def _template(entry: dict[str, Any], provider: str) -> list[str]:
     return [str(item) for item in argv]
 
 
-def _render(argv: list[str], payload: dict[str, Any], runtime: dict[str, str]) -> list[str]:
+def resolve_binary(template_cmd: str, provider: str, runtime: dict[str, str]) -> str:
+    """解析 CLI 可执行文件，兼顾 Windows/Linux/macOS 与 PATH 回退。"""
+    raw = template_cmd.replace("{WF_BIN}", runtime["WF_BIN"]).replace("{WF_VENV}", runtime["WF_VENV"])
+    if raw and os.path.isfile(raw):
+        return raw
+
+    stem = Path(raw).stem if raw else provider
+    candidates: list[Path] = []
+    if runtime["WF_VENV"]:
+        venv = Path(runtime["WF_VENV"])
+        candidates.extend([venv / "Scripts" / f"{stem}.exe", venv / "Scripts" / stem, venv / "bin" / stem])
+    if runtime["WF_BIN"]:
+        bindir = Path(runtime["WF_BIN"])
+        candidates.extend([bindir / f"{stem}.exe", bindir / stem, bindir / stem / f"{stem}.exe", bindir / stem / stem])
+    for cand in candidates:
+        if cand.is_file():
+            return str(cand)
+
+    found = shutil.which(stem) or (shutil.which(provider) if provider != stem else None)
+    if found:
+        return found
+    return raw
+
+
+def _render(
+    argv: list[str],
+    payload: dict[str, Any],
+    runtime: dict[str, str],
+    provider: str,
+) -> list[str]:
     values: dict[str, str] = dict(runtime)
     joined = " ".join(argv)
     for key, payload_key in PLACEHOLDER_KEYS.items():
@@ -98,7 +129,10 @@ def _render(argv: list[str], payload: dict[str, Any], runtime: dict[str, str]) -
 
     known = set(values) | set(PLACEHOLDER_KEYS)
     rendered: list[str] = []
-    for item in argv:
+    for idx, item in enumerate(argv):
+        if idx == 0:
+            rendered.append(resolve_binary(item, provider, runtime))
+            continue
         out = item
         for key, value in values.items():
             out = out.replace("{" + key + "}", value)
@@ -133,9 +167,8 @@ def _normalize(action: str, provider: str, command: list[str], stdout: str, stde
 
 def health(entry: dict[str, Any], provider: str, runtime: dict[str, Any] | None = None) -> dict[str, Any]:
     argv = _template(entry, provider)
-    binary = argv[0].replace("{WF_BIN}", _runtime(entry, runtime)["WF_BIN"]).replace(
-        "{WF_VENV}", _runtime(entry, runtime)["WF_VENV"]
-    )
+    rt = _runtime(entry, runtime)
+    binary = resolve_binary(argv[0], provider, rt)
     exists = bool(binary) and os.path.isfile(binary)
     return {
         "ok": exists,
@@ -157,7 +190,8 @@ def execute(
     if action == "health":
         return health(capability, provider, runtime)
 
-    argv = _render(_template(capability, provider), payload, _runtime(capability, runtime))
+    rt = _runtime(capability, runtime)
+    argv = _render(_template(capability, provider), payload, rt, provider)
     try:
         timeout = float(payload.get("timeout") or DEFAULT_TIMEOUT)
     except (TypeError, ValueError) as exc:

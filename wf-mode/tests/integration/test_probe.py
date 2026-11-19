@@ -27,7 +27,7 @@ def test_probe_cli_uses_health(monkeypatch):
     monkeypatch.setattr(
         service,
         "list_capabilities",
-        lambda: {"capabilities": {"repo_ingest": {"kind": "cli", "primary": "gitingest"}}},
+        lambda: {"capabilities": {"scaffold": {"kind": "cli", "primary": "copier"}}},
     )
     seen = {}
     monkeypatch.setattr(
@@ -35,17 +35,17 @@ def test_probe_cli_uses_health(monkeypatch):
         "_run_tool",
         lambda args: seen.update({"args": args}) or {"ok": True, "data": {}},
     )
-    service.probe("repo_ingest")
-    assert seen["args"] == ["health", "repo_ingest"]
+    service.probe("scaffold")
+    assert seen["args"] == ["health", "scaffold"]
 
 
 def test_probe_mcp_reports_unavailable(monkeypatch):
     monkeypatch.setattr(
         service,
         "list_capabilities",
-        lambda: {"capabilities": {"package_meta": {"kind": "mcp", "primary": "github-mcp"}}},
+        lambda: {"capabilities": {"custom_mcp": {"kind": "mcp", "primary": "github-mcp"}}},
     )
-    result = service.probe("package_meta")
+    result = service.probe("custom_mcp")
     assert result["ok"] is True
     assert "MCP" in result["data"]["note"]
 

@@ -1,0 +1,40 @@
+slot: package_meta
+version: "0.2.0"
+license: MIT
+os:
+  - windows
+  - linux
+  - macos
+actions:
+  - lookup
+  - search
+  - health
+providers:
+  auto:
+    role: primary
+    env: []
+  pypi:
+    role: alternate
+    env: []
+    endpoint: https://pypi.org/pypi
+  npm:
+    role: alternate
+    env: []
+    endpoint: https://registry.npmjs.org
+  crates:
+    role: alternate
+    env: []
+    endpoint: https://crates.io/api/v1
+  github:
+    role: alternate
+    env:
+      - GITHUB_TOKEN
+      - GH_TOKEN
+    endpoint: https://api.github.com
+credentials: []
+writeSurface: []
+timeoutMs: 20000
+retry:
+  max: 2
+  backoffMs: 400
+notes: 零密钥查询 PyPI / npm / crates.io / GitHub 包版本、许可、下载量与仓库链接。

@@ -27,17 +27,18 @@ def test_three_stage_commands_exist():
 
 def test_stage_one_has_no_research_tools():
     frontmatter, body = read("wf.md")
-    assert "wf_stage.py\" calibrate" in frontmatter
+    assert 'wf_stage.py" init' in frontmatter
     assert "wf-tool.py" not in frontmatter
     assert "mcp__" not in frontmatter
     assert "research" not in frontmatter
     assert "/wf-plan" in body
 
 
-def test_stage_two_has_research_but_no_write():
+def test_stage_two_has_research_and_enter_plan_without_write():
     frontmatter, body = read("wf-plan.md")
-    assert "wf_stage.py\" research" in frontmatter
-    assert "mcp__plugin_office-github_service__search_repositories" in frontmatter
+    assert 'wf_stage.py" enter-plan' in frontmatter
+    assert 'wf_stage.py" research' in frontmatter
+    assert 'wf_stage.py" calibrate' not in frontmatter
     for tool in ("Write", "Edit", "MultiEdit", "NotebookEdit"):
         assert tool not in frontmatter
     assert "/wf-report" in body
@@ -57,6 +58,8 @@ def test_gate_rules_cover_both_stages():
     assert ids == {"gate-1", "gate-2"}
     assert gates.REQUIRED_CAPABILITIES["gate-1"] == []
     assert "web_search" in gates.REQUIRED_CAPABILITIES["gate-2"]
+    assert "repo_health" in gates.REQUIRED_CAPABILITIES["gate-2"]
+    assert "package_security" in gates.REQUIRED_CAPABILITIES["gate-2"]
 
 
 def test_panel_does_not_display_gates():

@@ -24,6 +24,7 @@ settings.json
 .wf/backups/
 .wf/logs/
 .wf/cache/
+.wf/sessions/
 .wf/panel.lock.json
 panel/state.json
 

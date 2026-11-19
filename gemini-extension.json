@@ -1,0 +1,15 @@
+{
+  "name": "wf-agents",
+  "version": "2.0.0",
+  "description": "通用开源探索、仓库分析与装配规划工作流插件（含内置零依赖 Stdio MCP 与双人工闸口）。",
+  "contextFileName": "rules/AGENTS.md",
+  "mcpServers": {
+    "wf-agents": {
+      "command": "python",
+      "args": ["${extensionPath}/wf-mode/tools/wf_mcp.py"],
+      "env": {
+        "WF_ROOT": "${extensionPath}/wf-mode"
+      }
+    }
+  }
+}

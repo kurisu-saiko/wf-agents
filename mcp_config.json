@@ -1,0 +1,11 @@
+{
+  "mcpServers": {
+    "wf-agents": {
+      "command": "python",
+      "args": ["wf-mode/tools/wf_mcp.py"],
+      "env": {
+        "WF_ROOT": "wf-mode"
+      }
+    }
+  }
+}

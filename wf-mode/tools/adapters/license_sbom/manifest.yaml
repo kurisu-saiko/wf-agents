@@ -1,0 +1,25 @@
+slot: license_sbom
+version: "0.2.0"
+license: MIT
+os:
+  - windows
+  - linux
+  - macos
+actions:
+  - scan
+  - health
+providers:
+  builtin:
+    role: primary
+    env: []
+  syft:
+    role: alternate
+    env: []
+    notes: 可选 Syft CLI 备选。
+credentials: []
+writeSurface: []
+timeoutMs: 25000
+retry:
+  max: 1
+  backoffMs: 300
+notes: 内置 SPDX 许可证商用风险分类与多生态依赖 SBOM 提取（支持本地与 GitHub 仓库）。

@@ -65,6 +65,7 @@ def source_badge(source: str) -> str:
     label, tone = {
         "panel": ("面板", "panel"),
         "env": ("环境变量", "env"),
+        "gh-cli": ("gh CLI", "env"),
         "yaml": ("yaml 默认", "yaml"),
         "none": ("未配置", "disabled"),
     }.get(source, (source, "disabled"))

@@ -1,16 +1,18 @@
 """面板数据层：调用 wf-tool、读写提示词、启停与本地配置。
 
-只做数据转换与最小 IO；不执行业务逻辑，不记录运行历史。
+只做数据转换与最小 IO；不记录运行历史。
+优先进程内直接调用 wf-tool，避免点击面板时频繁启动子进程。
 """
 
 from __future__ import annotations
 
+import importlib.util
 import json
 import os
-import subprocess
 import sys
 from datetime import datetime
 from pathlib import Path
+from typing import Any
 
 ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
@@ -19,23 +21,28 @@ if str(ROOT) not in sys.path:
 import yaml  # noqa: E402
 
 from tools import config as wf_config  # noqa: E402
+from tools import session as wf_session  # noqa: E402
 
 TOOL = ROOT / "tools" / "wf-tool.py"
 AGENT = ROOT / "agent" / "wf-agent.md"
-STATE = ROOT / "panel" / "state.json"
+_DEFAULT_STATE = ROOT / "panel" / "state.json"
+STATE = _DEFAULT_STATE
 CATALOG = ROOT / "capabilities.yaml"
-BACKUPS = ROOT / "panel" / "backups"
+_DEFAULT_BACKUPS = ROOT / "panel" / "backups"
+BACKUPS = _DEFAULT_BACKUPS
 
 SECRET_FIELDS: tuple[tuple[str, tuple[str, ...], str], ...] = (
     ("Tavily", ("TAVILY_API_KEY", "TAVILY"), "TAVILY_API_KEY"),
     ("Exa", ("EXA_API_KEY", "EXA"), "EXA_API_KEY"),
+    ("Brave", ("BRAVE_API_KEY", "BRAVE"), "BRAVE_API_KEY"),
+    ("SearXNG", ("SEARXNG_URL",), "SEARXNG_URL"),
     ("Firecrawl", ("FIRECRAWL_API_KEY", "FIRECRAWL"), "FIRECRAWL_API_KEY"),
     ("Jina", ("JINA_API_KEY", "JINA"), "JINA_API_KEY"),
     ("GitHub", ("GITHUB_TOKEN", "GH_TOKEN", "GITHUB_MCP_TOKEN"), "GITHUB_TOKEN"),
 )
 
 PROBES: dict[str, list[str]] = {
-    "web_search": ["call", "web_search", "search", "--query", "ping", "--maxResults", "1"],
+    "web_search": ["call", "web_search", "search", "--query", "python mcp", "--maxResults", "1"],
     "web_extract": ["call", "web_extract", "extract", "--url", "https://example.com"],
     "project_search": [
         "call",
@@ -46,22 +53,67 @@ PROBES: dict[str, list[str]] = {
         "--maxResults",
         "1",
     ],
+    "package_meta": ["call", "package_meta", "lookup", "--package", "pytest", "--ecosystem", "pypi"],
+    "package_security": ["call", "package_security", "query", "--package", "requests", "--ecosystem", "PyPI"],
 }
+
+_WF_TOOL_MOD: Any = None
+
+
+def _state_path() -> Path:
+    if STATE != _DEFAULT_STATE:
+        return STATE
+    if os.environ.get("WF_DATA_DIR", "").strip() or os.environ.get("PLUGIN_DATA", "").strip():
+        return wf_config.data_dir() / "panel-state.json"
+    return STATE
+
+
+def _backups_dir() -> Path:
+    if BACKUPS != _DEFAULT_BACKUPS:
+        return BACKUPS
+    if os.environ.get("WF_DATA_DIR", "").strip() or os.environ.get("PLUGIN_DATA", "").strip():
+        return wf_config.data_dir() / "prompt-backups"
+    return BACKUPS
+
+
+def _load_wf_tool() -> Any:
+    global _WF_TOOL_MOD
+    if _WF_TOOL_MOD is not None:
+        return _WF_TOOL_MOD
+    spec = importlib.util.spec_from_file_location("wf_tool_runtime", TOOL)
+    if spec is None or spec.loader is None:
+        raise RuntimeError(f"无法加载 wf-tool: {TOOL}")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    _WF_TOOL_MOD = module
+    return module
 
 
 def _run_tool(args: list[str]) -> dict:
-    proc = subprocess.run(
-        [sys.executable, str(TOOL), *args],
-        capture_output=True,
-        text=True,
-        encoding="utf-8",
-        errors="replace",
-    )
-    text = wf_config.redact((proc.stdout or "").strip())
-    if not text:
-        stderr = wf_config.redact((proc.stderr or "").strip()[:500])
-        raise RuntimeError(f"wf-tool 没有输出；stderr: {stderr}")
-    return json.loads(text)
+    wf = _load_wf_tool()
+    if not args:
+        raise RuntimeError("wf-tool 参数为空")
+    cmd = args[0]
+    if cmd == "list":
+        return {"ok": True, "data": wf.list_capabilities(), "error": None, "degradation": [], "meta": {"ms": 0}}
+    if cmd == "health":
+        name = args[1] if len(args) > 1 and not args[1].startswith("--") else None
+        return {"ok": True, "data": wf.health(name), "error": None, "degradation": [], "meta": {"ms": 0}}
+    if cmd == "doctor":
+        return {"ok": True, "data": wf.doctor(), "error": None, "degradation": [], "meta": {"ms": 0}}
+    if cmd == "call":
+        if len(args) < 3:
+            raise RuntimeError("call 需要 <capability> <action>")
+        payload = wf.parse_payload(args[3:])
+        return wf.dispatch(args[1], args[2], payload)
+    if cmd == "panel":
+        mode = args[1][2:] if len(args) > 1 and args[1].startswith("--") else "status"
+        if mode == "status":
+            return {"ok": True, "data": wf._panel_status(), "error": None, "degradation": [], "meta": {"ms": 0}}
+        if mode == "close":
+            return {"ok": True, "data": wf._panel_close(), "error": None, "degradation": [], "meta": {"ms": 0}}
+        return {"ok": True, "data": wf._panel_ensure(open_browser=False), "error": None, "degradation": [], "meta": {"ms": 0}}
+    raise RuntimeError(f"不支持的 wf-tool 子命令: {cmd}")
 
 
 def list_capabilities() -> dict:
@@ -79,7 +131,7 @@ def doctor() -> dict:
 
 def load_state() -> dict:
     try:
-        data = json.loads(STATE.read_text(encoding="utf-8"))
+        data = json.loads(_state_path().read_text(encoding="utf-8"))
     except (FileNotFoundError, ValueError):
         return {"disabled": []}
     if not isinstance(data, dict) or not isinstance(data.get("disabled"), list):
@@ -88,8 +140,9 @@ def load_state() -> dict:
 
 
 def save_state(disabled: set[str]) -> None:
-    STATE.parent.mkdir(parents=True, exist_ok=True)
-    STATE.write_text(
+    path = _state_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
         json.dumps({"disabled": sorted(disabled)}, ensure_ascii=False, indent=2) + "\n",
         encoding="utf-8",
     )
@@ -131,7 +184,7 @@ def save_secret_updates(updates: dict[str, str], clears: set[str]) -> str:
     secrets = dict(data.get("secrets") or {})
     for label, value in updates.items():
         if value:
-            for name, names, canonical in SECRET_FIELDS:
+            for name, _, canonical in SECRET_FIELDS:
                 if name == label:
                     secrets[canonical] = value
                     break
@@ -216,6 +269,10 @@ def probe(capability: str) -> dict:
     return _run_tool(["health", capability])
 
 
+def session_info() -> dict[str, Any]:
+    return wf_session.load_session()
+
+
 def split_agent() -> tuple[str, str]:
     text = AGENT.read_text(encoding="utf-8")
     if text.startswith("---"):
@@ -240,9 +297,10 @@ def agent_summary() -> dict:
 
 def save_agent_body(body: str) -> str:
     frontmatter, _ = split_agent()
-    BACKUPS.mkdir(parents=True, exist_ok=True)
+    bdir = _backups_dir()
+    bdir.mkdir(parents=True, exist_ok=True)
     stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
-    backup = BACKUPS / f"wf-agent-{stamp}.md"
+    backup = bdir / f"wf-agent-{stamp}.md"
     backup.write_text(AGENT.read_text(encoding="utf-8"), encoding="utf-8")
     AGENT.write_text(f"---\n{frontmatter}\n---\n\n{body.rstrip()}\n", encoding="utf-8")
     return str(backup)

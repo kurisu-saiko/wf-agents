@@ -1,7 +1,7 @@
 """检索结果缓存。
 
 只缓存成功结果；key 由 slot/provider/参数归一化后哈希。
-默认目录 <cwd>/.wf/cache/http；TTL 7 天。写入使用临时文件 + os.replace，损坏/过期按 miss。
+默认目录 <WF_DATA_DIR>/cache/http；默认 TTL 7 天。写入使用临时文件 + os.replace，损坏/过期按 miss。
 """
 
 from __future__ import annotations
@@ -13,6 +13,8 @@ import tempfile
 import time
 from pathlib import Path
 from typing import Any
+
+from tools import config as local_config
 
 CACHE_VERSION = "1"
 DEFAULT_TTL = 7 * 24 * 3600
@@ -26,10 +28,12 @@ def _root() -> Path:
     raw = os.environ.get("WF_CACHE_DIR", "").strip()
     if raw:
         return Path(raw)
-    return Path.cwd() / ".wf" / "cache"
+    return local_config.data_dir() / "cache"
 
 
-def _ttl() -> int:
+def _ttl(override: int | None = None) -> int:
+    if override is not None:
+        return max(0, int(override))
     try:
         return max(0, int(os.environ.get("WF_CACHE_TTL", str(DEFAULT_TTL))))
     except ValueError:
@@ -46,7 +50,7 @@ def _path(slot: str, provider: str, key: str) -> Path:
     return _root() / "http" / slot / provider / f"{key}.json"
 
 
-def get(slot: str, provider: str, key: str) -> dict[str, Any] | None:
+def get(slot: str, provider: str, key: str, ttl: int | None = None) -> Any | None:
     if _disabled():
         return None
     path = _path(slot, provider, key)
@@ -60,14 +64,15 @@ def get(slot: str, provider: str, key: str) -> dict[str, Any] | None:
         cached_at = float(raw.get("cachedAt") or 0)
     except (TypeError, ValueError):
         return None
-    if not cached_at or time.time() - cached_at > _ttl():
+    effective_ttl = _ttl() if ttl is None else max(0, int(ttl))
+    if not cached_at or time.time() - cached_at > effective_ttl:
         return None
     value = raw.get("value")
-    return value if isinstance(value, dict) else None
+    return value if isinstance(value, (dict, list)) else None
 
 
-def put(slot: str, provider: str, key: str, value: dict[str, Any]) -> None:
-    if _disabled() or not isinstance(value, dict):
+def put(slot: str, provider: str, key: str, value: Any) -> None:
+    if _disabled() or not isinstance(value, (dict, list)):
         return
     path = _path(slot, provider, key)
     try:

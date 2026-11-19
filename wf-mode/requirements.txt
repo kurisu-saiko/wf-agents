@@ -1,7 +1,10 @@
-pytest>=8.0
+# 核心运行时仅需 Python >= 3.10 与 PyYAML（HTTP/面板/搜索/分析均为标准库零依赖可用）
 PyYAML>=6.0
-httpx>=0.27
-streamlit>=1.40
 
-# 可选：安装后启用契约 schema 校验
-# jsonschema>=4.20
+# 测试与契约校验（CI 使用）
+pytest>=8.0
+jsonschema>=4.20
+
+# 可选增强（存在时自动启用）
+# httpx>=0.27
+# streamlit>=1.40

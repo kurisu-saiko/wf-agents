@@ -1,32 +1,52 @@
-"""分阶段只读包装器：用工具集差异实现硬闸口。
+"""分阶段只读包装器与工作流生命周期管理。
 
 用法：
-  python tools/wf_stage.py calibrate
+  python tools/wf_stage.py init [--task "..."] [--session <id>] [--no-open]
+  python tools/wf_stage.py calibrate [--session <id>] [--no-open]
+  python tools/wf_stage.py enter-plan [--requirements "..."] [--session <id>]
+  python tools/wf_stage.py enter-report [--summary "..."] [--session <id>]
+  python tools/wf_stage.py close [--session <id>]
+  python tools/wf_stage.py status [--session <id>]
   python tools/wf_stage.py research <capability> <action> [--key value | --json "{...}"]
 
-`calibrate` 只做能力校准与面板启动；`research` 只放行已登记的只读能力。
-写类、pending、未知能力一律拒绝。
+面板生命周期规则：
+- `init` / `calibrate`：仅在本会话第一次交互时启动并打开配置面板；同会话后续调用不重复打开浏览器。
+- `enter-plan` / `enter-report` / `close`：自动关闭配置面板（`panel --close`）并更新阶段状态。
+- `research`：只放行只读调研/分析能力；写类、pending、未知能力一律拒绝。
 """
 
 from __future__ import annotations
 
 import json
+import re
 import subprocess
 import sys
 from pathlib import Path
 from typing import Any
 
 ROOT = Path(__file__).resolve().parents[1]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+
+from tools import session as wf_session  # noqa: E402
+
 TOOL = ROOT / "tools" / "wf-tool.py"
 
 READ_ACTIONS: dict[str, set[str]] = {
-    "project_search": {"search", "lookup", "health"},
+    "project_search": {"search", "lookup", "search_code", "health"},
     "web_search": {"search", "health"},
     "web_extract": {"extract", "health"},
-    "repo_ingest": {"ingest", "health"},
-    "structural_search": {"search", "health"},
-    "dependency_graph": {"graph", "health"},
+    "repo_ingest": {"ingest", "tree", "read", "readme", "health"},
+    "repo_health": {"analyze", "health"},
+    "package_meta": {"lookup", "search", "health"},
+    "package_security": {"scan", "query", "health"},
+    "license_sbom": {"scan", "health"},
+    "dependency_graph": {"graph", "analyze", "health"},
+    "structural_search": {"search", "symbols", "health"},
 }
+
+_PATH_TRAVERSAL_RE = re.compile(r"(?:^|[\\/])\.\.(?:$|[\\/])")
+_PATH_FLAGS = {"--path", "--destination", "--template"}
 
 
 class StageError(Exception):
@@ -58,11 +78,83 @@ def _emit(data: dict[str, Any], code: int = 0) -> int:
     return code
 
 
-def calibrate() -> int:
+def _parse_flags(args: list[str]) -> dict[str, Any]:
+    parsed: dict[str, Any] = {}
+    i = 0
+    while i < len(args):
+        tok = args[i]
+        if not tok.startswith("--"):
+            raise StageError(f"不识别的参数: {tok}")
+        key = tok[2:]
+        if "=" in key:
+            k, v = key.split("=", 1)
+            parsed[k] = v
+            i += 1
+            continue
+        if key in {"no-open", "force-panel"}:
+            parsed[key] = True
+            i += 1
+            continue
+        if i + 1 >= len(args):
+            raise StageError(f"参数缺少值: {tok}")
+        parsed[key] = args[i + 1]
+        i += 2
+    return parsed
+
+
+def _check_path_traversal(args: list[str]) -> None:
+    for idx, token in enumerate(args):
+        key = token.split("=", 1)[0]
+        if key in _PATH_FLAGS:
+            val = token.split("=", 1)[1] if "=" in token else (args[idx + 1] if idx + 1 < len(args) else "")
+            if _PATH_TRAVERSAL_RE.search(val.strip()):
+                raise StageError("禁止路径穿越（..）")
+        if token == "--json" and idx + 1 < len(args):
+            try:
+                obj = json.loads(args[idx + 1])
+            except ValueError:
+                obj = {}
+            if isinstance(obj, dict):
+                for pk in ("path", "destination", "template"):
+                    v = str(obj.get(pk) or "")
+                    if v and _PATH_TRAVERSAL_RE.search(v):
+                        raise StageError("禁止路径穿越（..）")
+
+
+def _calibrate_core(
+    *,
+    session_id: str | None = None,
+    task: str | None = None,
+    open_panel_if_needed: bool = True,
+    reset: bool = False,
+) -> dict[str, Any]:
     health = _run(["health"])
     doctor = _run(["doctor"])
     listed = _run(["list"])
-    panel = _run(["panel", "--ensure"])
+
+    sid = session_id or wf_session.default_session_id()
+    if reset:
+        current = wf_session.load_session(sid)
+        # 如果是同一会话重开新任务且上一轮已关闭，重新允许首轮打开面板；否则保留 panelOpened 状态
+        preserve = current.get("stage") == "init"
+        state = wf_session.reset_session(sid, task or "", preserve_panel_opened=preserve)
+    else:
+        state = wf_session.load_session(sid)
+        if task and not state.get("task"):
+            state["task"] = task.strip()
+            state = wf_session.save_session(state, sid)
+
+    panel_data: dict[str, Any]
+    if open_panel_if_needed and not state.get("panelOpened"):
+        panel_res = _run(["panel", "--ensure"])
+        panel_data = panel_res.get("data", {})
+        wf_session.mark_panel_opened(sid)
+        state = wf_session.load_session(sid)
+    else:
+        status_res = _run(["panel", "--status"])
+        panel_data = dict(status_res.get("data", {}))
+        panel_data["opened"] = False
+        panel_data["skipped_reopen"] = bool(state.get("panelOpened"))
 
     statuses = health.get("data", {}).get("capabilities", {})
     buckets: dict[str, list[str]] = {
@@ -76,8 +168,9 @@ def calibrate() -> int:
         status = str(item.get("status") or "missing")
         buckets.setdefault(status, []).append(name)
 
-    data = {
+    return {
         "ok": bool(health.get("ok")) and bool(doctor.get("ok")),
+        "session": state,
         "runtime": doctor.get("data", {}).get("runtime", {}),
         "hosts": doctor.get("data", {}).get("hosts", {}),
         "capabilities": buckets,
@@ -86,9 +179,90 @@ def calibrate() -> int:
             for name, item in listed.get("data", {}).get("capabilities", {}).items()
             if item.get("envSources")
         },
-        "panel": panel.get("data", {}),
+        "panel": panel_data,
     }
+
+
+def calibrate(session_id: str | None = None, open_panel_if_needed: bool = True) -> int:
+    data = _calibrate_core(
+        session_id=session_id,
+        open_panel_if_needed=open_panel_if_needed,
+        reset=False,
+    )
     return _emit(data, 0 if data["ok"] else 1)
+
+
+def init_workflow(
+    task: str = "",
+    session_id: str | None = None,
+    open_panel: bool = True,
+) -> int:
+    data = _calibrate_core(
+        session_id=session_id,
+        task=task,
+        open_panel_if_needed=open_panel,
+        reset=True,
+    )
+    return _emit(data, 0 if data["ok"] else 1)
+
+
+def enter_plan(requirements: str = "", session_id: str | None = None) -> int:
+    sid = session_id or wf_session.default_session_id()
+    panel_res = _run(["panel", "--close"])
+    state = wf_session.transition_to_plan(sid, requirements=requirements or None)
+    return _emit(
+        {
+            "ok": True,
+            "stage": "plan",
+            "session": state,
+            "panel": panel_res.get("data", {}),
+        },
+        0,
+    )
+
+
+def enter_report(summary: str = "", session_id: str | None = None) -> int:
+    sid = session_id or wf_session.default_session_id()
+    panel_res = _run(["panel", "--close"])
+    state = wf_session.transition_to_report(sid, plan_summary=summary or None)
+    return _emit(
+        {
+            "ok": True,
+            "stage": "report",
+            "session": state,
+            "panel": panel_res.get("data", {}),
+        },
+        0,
+    )
+
+
+def close_workflow(session_id: str | None = None) -> int:
+    sid = session_id or wf_session.default_session_id()
+    panel_res = _run(["panel", "--close"])
+    state = wf_session.close_session(sid)
+    return _emit(
+        {
+            "ok": True,
+            "stage": "closed",
+            "session": state,
+            "panel": panel_res.get("data", {}),
+        },
+        0,
+    )
+
+
+def status_workflow(session_id: str | None = None) -> int:
+    sid = session_id or wf_session.default_session_id()
+    panel_res = _run(["panel", "--status"])
+    state = wf_session.load_session(sid)
+    return _emit(
+        {
+            "ok": True,
+            "session": state,
+            "panel": panel_res.get("data", {}),
+        },
+        0,
+    )
 
 
 def research(args: list[str]) -> int:
@@ -100,8 +274,7 @@ def research(args: list[str]) -> int:
         raise StageError(f"阶段 4 不允许调用能力: {capability}")
     if action not in allowed:
         raise StageError(f"{capability} 不允许动作: {action}")
-    if ".." in " ".join(args):
-        raise StageError("禁止路径穿越（..）")
+    _check_path_traversal(args[2:])
 
     envelope = _run(["call", capability, action, *args[2:]])
     return _emit(envelope, 0 if envelope.get("ok") else 1)
@@ -116,9 +289,39 @@ def main(argv: list[str] | None = None) -> int:
     try:
         command = args[0]
         if command == "calibrate":
-            if len(args) > 1:
+            # 保持严格参数校验：如有未知位置参数则报错，支持 --session / --no-open
+            if len(args) > 1 and not args[1].startswith("--"):
                 raise StageError("calibrate 不接受额外参数")
-            return calibrate()
+            flags = _parse_flags(args[1:])
+            return calibrate(
+                session_id=flags.get("session"),
+                open_panel_if_needed=not bool(flags.get("no-open")),
+            )
+        if command == "init":
+            flags = _parse_flags(args[1:])
+            return init_workflow(
+                task=str(flags.get("task") or ""),
+                session_id=flags.get("session"),
+                open_panel=not bool(flags.get("no-open")),
+            )
+        if command == "enter-plan":
+            flags = _parse_flags(args[1:])
+            return enter_plan(
+                requirements=str(flags.get("requirements") or ""),
+                session_id=flags.get("session"),
+            )
+        if command == "enter-report":
+            flags = _parse_flags(args[1:])
+            return enter_report(
+                summary=str(flags.get("summary") or ""),
+                session_id=flags.get("session"),
+            )
+        if command == "close":
+            flags = _parse_flags(args[1:])
+            return close_workflow(session_id=flags.get("session"))
+        if command == "status":
+            flags = _parse_flags(args[1:])
+            return status_workflow(session_id=flags.get("session"))
         if command == "research":
             return research(args[1:])
         raise StageError(f"未知阶段命令: {command}")

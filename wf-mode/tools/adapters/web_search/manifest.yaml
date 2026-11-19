@@ -1,6 +1,6 @@
 slot: web_search
-version: "0.1.0"
-license: commercial-api
+version: "0.2.0"
+license: commercial-api-and-public
 os:
   - windows
   - linux
@@ -21,14 +21,33 @@ providers:
       - EXA_API_KEY
       - EXA
     endpoint: https://api.exa.ai/search
+  brave:
+    role: alternate
+    env:
+      - BRAVE_API_KEY
+      - BRAVE
+    endpoint: https://api.search.brave.com/res/v1/web/search
+  searxng:
+    role: alternate
+    env:
+      - SEARXNG_URL
+    notes: 自托管 SearXNG JSON 接口。
+  duckduckgo:
+    role: alternate
+    env: []
+    endpoint: https://html.duckduckgo.com/html/
+    notes: 零密钥内置兜底，无需 API Key 即可发现网页候选。
 credentials:
   - TAVILY_API_KEY
   - TAVILY
   - EXA_API_KEY
   - EXA
+  - BRAVE_API_KEY
+  - BRAVE
+  - SEARXNG_URL
 writeSurface: []
 timeoutMs: 20000
 retry:
-  max: 1
-  backoffMs: 300
-notes: 只做认证、调用、字段归一化；搜索摘要不能当证据。
+  max: 2
+  backoffMs: 500
+notes: Tavily -> Exa -> Brave -> SearXNG -> DuckDuckGo 自动降级链。

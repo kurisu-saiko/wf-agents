@@ -26,9 +26,13 @@ __pycache__/
 # wf-mode 本地运行态与生成物
 wf-mode/settings.json
 wf-mode/panel/state.json
+wf-mode/panel/backups/
+wf-mode/runtime/
+wf-mode/agents/wf-agent.md
 Cache/
 shell-snapshots/
 .venv/
+wf-mode/.venv/
 *.bak.*
 
 # OS / editor

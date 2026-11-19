@@ -1,0 +1,493 @@
+"""零依赖 Stdio MCP Server（JSON-RPC 2.0，纯 Python 标准库）。
+
+兼容 Antigravity、Claude Code、Cursor、Codex、Gemini CLI、OpenCode 等所有支持 MCP 的宿主。
+同时支持换行符分隔 JSON 与 Content-Length 帧格式。
+"""
+
+from __future__ import annotations
+
+import importlib.util
+import json
+import sys
+from pathlib import Path
+from typing import Any
+
+ROOT = Path(__file__).resolve().parents[1]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+
+from tools import session as wf_session  # noqa: E402
+from tools import wf_stage  # noqa: E402
+
+_WF_TOOL: Any = None
+
+
+def _wf_tool() -> Any:
+    global _WF_TOOL
+    if _WF_TOOL is None:
+        path = ROOT / "tools" / "wf-tool.py"
+        spec = importlib.util.spec_from_file_location("wf_tool_mcp", path)
+        if spec is None or spec.loader is None:
+            raise RuntimeError(f"无法加载 wf-tool: {path}")
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        _WF_TOOL = mod
+    return _WF_TOOL
+
+
+TOOLS: list[dict[str, Any]] = [
+    {
+        "name": "wf_start",
+        "description": (
+            "初始化 wf 工作流第 1 阶段（能力校准 + 首次交互自动打开配置面板）。"
+            "同会话重复调用不会重复打开浏览器弹窗。"
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "task": {"type": "string", "description": "用户任务描述"},
+                "sessionId": {"type": "string", "description": "可选会话 ID，默认 default"},
+                "openPanel": {"type": "boolean", "description": "是否首次打开配置面板，默认 true"},
+            },
+        },
+    },
+    {
+        "name": "wf_enter_plan",
+        "description": (
+            "在用户确认需求（闸口 1）后进入第 2 阶段（计划/调研模式）。"
+            "会自动关闭配置面板并解锁全部调研与仓库分析工具。"
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "requirements": {"type": "string", "description": "已确认的需求卡摘要"},
+                "sessionId": {"type": "string", "description": "可选会话 ID"},
+            },
+        },
+    },
+    {
+        "name": "wf_enter_report",
+        "description": "在用户确认方案（闸口 2）后进入第 3 阶段（交付报告阶段），确保面板已关闭。",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "summary": {"type": "string", "description": "已确认的方案摘要"},
+                "sessionId": {"type": "string", "description": "可选会话 ID"},
+            },
+        },
+    },
+    {
+        "name": "wf_close",
+        "description": "结束或终止 wf 工作流并关闭配置面板。",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "sessionId": {"type": "string", "description": "可选会话 ID"},
+            },
+        },
+    },
+    {
+        "name": "wf_status",
+        "description": "查看当前 wf 工作流阶段状态、需求摘要及配置面板运行状态。",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "sessionId": {"type": "string", "description": "可选会话 ID"},
+            },
+        },
+    },
+    {
+        "name": "wf_panel",
+        "description": "手动控制配置面板：status（查看状态）、open（打开面板）、close（关闭面板）。",
+        "inputSchema": {
+            "type": "object",
+            "required": ["action"],
+            "properties": {
+                "action": {"type": "string", "enum": ["status", "open", "close"]},
+            },
+        },
+    },
+    {
+        "name": "wf_web_search",
+        "description": "多引擎网页搜索（Tavily -> Exa -> Brave -> SearXNG -> DuckDuckGo 零密钥兜底）。",
+        "inputSchema": {
+            "type": "object",
+            "required": ["query"],
+            "properties": {
+                "query": {"type": "string", "description": "搜索关键词"},
+                "maxResults": {"type": "integer", "minimum": 1, "maximum": 20, "default": 5},
+                "days": {"type": "integer", "description": "可选时间范围（天数）"},
+                "includeDomains": {"type": "array", "items": {"type": "string"}},
+                "excludeDomains": {"type": "array", "items": {"type": "string"}},
+                "provider": {"type": "string", "enum": ["tavily", "exa", "brave", "searxng", "duckduckgo"]},
+                "sessionId": {"type": "string"},
+            },
+        },
+    },
+    {
+        "name": "wf_web_extract",
+        "description": "抽取网页/文档/GitHub 文件正文为干净 Markdown（Firecrawl -> Jina -> Direct 内置抽取）。",
+        "inputSchema": {
+            "type": "object",
+            "required": ["url"],
+            "properties": {
+                "url": {"type": "string", "description": "http/https 目标 URL"},
+                "maxChars": {"type": "integer", "default": 24000},
+                "provider": {"type": "string", "enum": ["firecrawl", "jina", "direct"]},
+                "sessionId": {"type": "string"},
+            },
+        },
+    },
+    {
+        "name": "wf_project_search",
+        "description": "GitHub 开源项目搜索（search）、单仓详情（lookup）与代码片段搜索（search_code）。",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "action": {"type": "string", "enum": ["search", "lookup", "search_code"], "default": "search"},
+                "query": {"type": "string"},
+                "repo": {"type": "string", "description": "owner/name 或 GitHub URL"},
+                "language": {"type": "string"},
+                "minStars": {"type": "integer"},
+                "license": {"type": "string"},
+                "topic": {"type": "string"},
+                "pushedAfter": {"type": "string", "description": "YYYY-MM-DD"},
+                "sort": {"type": "string", "enum": ["stars", "updated", "forks"]},
+                "path": {"type": "string", "description": "search_code 时的路径过滤"},
+                "maxResults": {"type": "integer", "default": 5},
+                "sessionId": {"type": "string"},
+            },
+        },
+    },
+    {
+        "name": "wf_repo_inspect",
+        "description": "免克隆读取 GitHub 仓库或本地项目的文件树（tree）、指定文件行范围（read）、README（readme）或智能上下文摘要（ingest）。",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "action": {"type": "string", "enum": ["ingest", "tree", "read", "readme"], "default": "ingest"},
+                "repo": {"type": "string", "description": "GitHub owner/name 或 URL"},
+                "path": {"type": "string", "description": "本地项目目录或文件路径"},
+                "file": {"type": "string", "description": "action=read 时的相对文件路径"},
+                "ref": {"type": "string", "description": "可选 Git 分支或 tag"},
+                "startLine": {"type": "integer", "default": 1},
+                "endLine": {"type": "integer", "default": 300},
+                "maxChars": {"type": "integer", "default": 24000},
+                "sessionId": {"type": "string"},
+            },
+        },
+    },
+    {
+        "name": "wf_repo_health",
+        "description": "评估 GitHub 仓库维护健康度（近 30/90 天提交、作者集中度、最新发布、许可证类别与风险标记）。",
+        "inputSchema": {
+            "type": "object",
+            "required": ["repo"],
+            "properties": {
+                "repo": {"type": "string", "description": "owner/name 或 GitHub URL"},
+                "sessionId": {"type": "string"},
+            },
+        },
+    },
+    {
+        "name": "wf_package_meta",
+        "description": "查询或搜索 PyPI / npm / crates.io / GitHub 包版本、下载量、许可证与仓库链接。",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "action": {"type": "string", "enum": ["lookup", "search"], "default": "lookup"},
+                "package": {"type": "string", "description": "包名"},
+                "query": {"type": "string", "description": "search 关键词"},
+                "ecosystem": {"type": "string", "enum": ["auto", "pypi", "npm", "crates", "github"]},
+                "maxResults": {"type": "integer", "default": 5},
+                "sessionId": {"type": "string"},
+            },
+        },
+    },
+    {
+        "name": "wf_package_security",
+        "description": "基于 OSV.dev 实时漏洞库扫描本地项目、GitHub 仓库或单个软件包的已知 CVE/GHSA 漏洞。",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "action": {"type": "string", "enum": ["scan", "query"], "default": "scan"},
+                "path": {"type": "string", "description": "本地目录路径"},
+                "repo": {"type": "string", "description": "GitHub owner/name"},
+                "package": {"type": "string", "description": "action=query 时的包名"},
+                "ecosystem": {"type": "string", "description": "PyPI / npm / crates.io / Go"},
+                "version": {"type": "string"},
+                "sessionId": {"type": "string"},
+            },
+        },
+    },
+    {
+        "name": "wf_license_scan",
+        "description": "识别本地目录或 GitHub 仓库的开源许可证类别（宽松/弱传染/强传染）并提取完整多生态依赖 SBOM。",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "path": {"type": "string", "description": "本地目录路径"},
+                "repo": {"type": "string", "description": "GitHub owner/name"},
+                "sessionId": {"type": "string"},
+            },
+        },
+    },
+    {
+        "name": "wf_project_analyze",
+        "description": "分析本地多语言项目（Python / JS-TS / Go / Rust）语言分布、入口文件、模块依赖图、核心枢纽与循环依赖。",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "path": {"type": "string", "description": "本地目录路径，默认 .", "default": "."},
+            },
+        },
+    },
+    {
+        "name": "wf_structural_search",
+        "description": "本地代码结构/模式搜索（search）或提取文件/目录的符号大纲（symbols，支持 Python AST / TS / JS / Go / Rust）。",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "action": {"type": "string", "enum": ["search", "symbols"], "default": "search"},
+                "path": {"type": "string", "default": "."},
+                "pattern": {"type": "string", "description": "action=search 时的搜索模式"},
+                "lang": {"type": "string", "description": "可选语言过滤 python/ts/js/go/rust"},
+                "maxResults": {"type": "integer", "default": 30},
+            },
+        },
+    },
+]
+
+
+def _gate_blocked(tool_name: str, args: dict[str, Any]) -> dict[str, Any] | None:
+    sid = str(args.get("sessionId") or "") or None
+    allowed, state = wf_session.is_research_allowed(sid)
+    if allowed:
+        return None
+
+    # 在 init 阶段允许本地只读检查以理解用户项目，拦截外部网络/GitHub 调研直到闸口 1 确认
+    local_only_tools = {"wf_project_analyze", "wf_structural_search"}
+    if tool_name in local_only_tools:
+        return None
+    if tool_name in {"wf_repo_inspect", "wf_license_scan", "wf_package_security"}:
+        has_remote = bool(args.get("repo") or args.get("url") or args.get("package"))
+        if not has_remote and args.get("path"):
+            return None
+
+    return {
+        "ok": False,
+        "error": {
+            "code": "GATE_REQUIRED",
+            "message": (
+                "当前工作流仍处于阶段 1（需求确认 / init），尚未通过闸口 1。"
+                "请先向用户确认需求，再调用 wf_enter_plan（将自动关闭配置面板并解锁全部外部调研工具）。"
+            ),
+            "retryable": False,
+            "details": {"stage": state.get("stage"), "tool": tool_name},
+        },
+    }
+
+
+def handle_tool_call(name: str, raw_args: dict[str, Any] | None) -> tuple[dict[str, Any], bool]:
+    args = dict(raw_args or {})
+    sid = str(args.pop("sessionId", "") or "") or None
+    wf = _wf_tool()
+
+    if name == "wf_start":
+        data = wf_stage._calibrate_core(
+            session_id=sid,
+            task=str(args.get("task") or ""),
+            open_panel_if_needed=bool(args.get("openPanel", True)),
+            reset=True,
+        )
+        return data, False
+
+    if name == "wf_enter_plan":
+        panel_res = wf._panel_close()
+        state = wf_session.transition_to_plan(sid, requirements=str(args.get("requirements") or "") or None)
+        return {"ok": True, "stage": "plan", "session": state, "panel": panel_res}, False
+
+    if name == "wf_enter_report":
+        panel_res = wf._panel_close()
+        state = wf_session.transition_to_report(sid, plan_summary=str(args.get("summary") or "") or None)
+        return {"ok": True, "stage": "report", "session": state, "panel": panel_res}, False
+
+    if name == "wf_close":
+        panel_res = wf._panel_close()
+        state = wf_session.close_session(sid)
+        return {"ok": True, "stage": "closed", "session": state, "panel": panel_res}, False
+
+    if name == "wf_status":
+        return {"ok": True, "session": wf_session.load_session(sid), "panel": wf._panel_status()}, False
+
+    if name == "wf_panel":
+        action = str(args.get("action") or "status")
+        if action == "status":
+            return {"ok": True, "panel": wf._panel_status()}, False
+        if action == "open":
+            return {"ok": True, "panel": wf._panel_ensure(open_browser=True, once=False)}, False
+        if action == "close":
+            return {"ok": True, "panel": wf._panel_close()}, False
+        return {"ok": False, "error": {"code": "INVALID_INPUT", "message": f"未知面板动作: {action}"}}, True
+
+    blocked = _gate_blocked(name, {**args, **({"sessionId": sid} if sid else {})})
+    if blocked is not None:
+        return blocked, False
+
+    dispatch_map: dict[str, tuple[str, str]] = {
+        "wf_web_search": ("web_search", "search"),
+        "wf_web_extract": ("web_extract", "extract"),
+        "wf_repo_health": ("repo_health", "analyze"),
+        "wf_license_scan": ("license_sbom", "scan"),
+        "wf_project_analyze": ("dependency_graph", "analyze"),
+    }
+
+    if name in dispatch_map:
+        cap, act = dispatch_map[name]
+        env = wf.dispatch(cap, act, args)
+        return env, not bool(env.get("ok"))
+
+    if name == "wf_project_search":
+        act = str(args.pop("action", "search") or "search")
+        env = wf.dispatch("project_search", act, args)
+        return env, not bool(env.get("ok"))
+
+    if name == "wf_repo_inspect":
+        act = str(args.pop("action", "ingest") or "ingest")
+        env = wf.dispatch("repo_ingest", act, args)
+        return env, not bool(env.get("ok"))
+
+    if name == "wf_package_meta":
+        act = str(args.pop("action", "lookup") or "lookup")
+        env = wf.dispatch("package_meta", act, args)
+        return env, not bool(env.get("ok"))
+
+    if name == "wf_package_security":
+        act = str(args.pop("action", "scan") or "scan")
+        env = wf.dispatch("package_security", act, args)
+        return env, not bool(env.get("ok"))
+
+    if name == "wf_structural_search":
+        act = str(args.pop("action", "search") or "search")
+        env = wf.dispatch("structural_search", act, args)
+        return env, not bool(env.get("ok"))
+
+    return {"ok": False, "error": {"code": "UNKNOWN_TOOL", "message": f"未知工具: {name}"}}, True
+
+
+def handle_message(msg: dict[str, Any]) -> dict[str, Any] | None:
+    method = str(msg.get("method") or "")
+    req_id = msg.get("id")
+    params = msg.get("params") if isinstance(msg.get("params"), dict) else {}
+
+    # 通知类消息无需响应
+    if req_id is None:
+        return None
+
+    if method == "initialize":
+        proto = str(params.get("protocolVersion") or "2024-11-05")
+        return {
+            "jsonrpc": "2.0",
+            "id": req_id,
+            "result": {
+                "protocolVersion": proto,
+                "capabilities": {"tools": {}},
+                "serverInfo": {"name": "wf-agents", "version": "2.0.0"},
+            },
+        }
+
+    if method == "ping":
+        return {"jsonrpc": "2.0", "id": req_id, "result": {}}
+
+    if method == "tools/list":
+        return {"jsonrpc": "2.0", "id": req_id, "result": {"tools": TOOLS}}
+
+    if method == "tools/call":
+        tool_name = str(params.get("name") or "")
+        arguments = params.get("arguments") if isinstance(params.get("arguments"), dict) else {}
+        try:
+            payload, is_error = handle_tool_call(tool_name, arguments)
+            return {
+                "jsonrpc": "2.0",
+                "id": req_id,
+                "result": {
+                    "content": [
+                        {"type": "text", "text": json.dumps(payload, ensure_ascii=False, indent=2)}
+                    ],
+                    "isError": is_error,
+                },
+            }
+        except Exception as exc:  # noqa: BLE001
+            return {
+                "jsonrpc": "2.0",
+                "id": req_id,
+                "result": {
+                    "content": [
+                        {
+                            "type": "text",
+                            "text": json.dumps(
+                                {"ok": False, "error": {"code": "INTERNAL", "message": str(exc)}},
+                                ensure_ascii=False,
+                            ),
+                        }
+                    ],
+                    "isError": True,
+                },
+            }
+
+    return {
+        "jsonrpc": "2.0",
+        "id": req_id,
+        "error": {"code": -32601, "message": f"Method not found: {method}"},
+    }
+
+
+def _read_message(stream: Any) -> tuple[dict[str, Any] | None, str]:
+    while True:
+        line = stream.readline()
+        if not line:
+            return None, "jsonl"
+        stripped = line.strip()
+        if not stripped:
+            continue
+        if stripped.lower().startswith(b"content-length:"):
+            length = int(stripped.split(b":", 1)[1].strip())
+            while True:
+                hdr = stream.readline()
+                if not hdr or hdr in (b"\r\n", b"\n"):
+                    break
+            body = stream.read(length)
+            if not body:
+                return None, "lsp"
+            return json.loads(body.decode("utf-8")), "lsp"
+        return json.loads(stripped.decode("utf-8")), "jsonl"
+
+
+def _write_message(stream: Any, payload: dict[str, Any], framing: str) -> None:
+    raw = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+    if framing == "lsp":
+        header = f"Content-Length: {len(raw)}\r\n\r\n".encode("ascii")
+        stream.write(header + raw)
+    else:
+        stream.write(raw + b"\n")
+    stream.flush()
+
+
+def main() -> int:
+    stdin = sys.stdin.buffer
+    stdout = sys.stdout.buffer
+    while True:
+        try:
+            msg, framing = _read_message(stdin)
+        except Exception:
+            continue
+        if msg is None:
+            break
+        resp = handle_message(msg)
+        if resp is not None:
+            _write_message(stdout, resp, framing)
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

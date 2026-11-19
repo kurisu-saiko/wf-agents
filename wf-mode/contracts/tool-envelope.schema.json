@@ -2,32 +2,32 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://wf.local/schemas/tool-envelope.schema.json",
   "title": "wf-tool 统一信封",
-  "description": "所有适配器和核心槽返回给调用方的唯一外层结构。管线只依赖这个结构，不依赖具体 provider。",
+  "description": "所有适配器和能力槽返回给调用方的唯一外层结构。管线只依赖这个结构，不依赖具体 provider。",
   "type": "object",
   "additionalProperties": false,
-  "required": ["ok", "slot", "action", "adapter", "data", "error", "degradation", "meta"],
+  "required": ["ok", "capability", "action", "provider", "data", "error", "degradation", "meta"],
   "properties": {
     "ok": {
       "type": "boolean",
       "description": "动作是否成功。false 时 error 必须非空。"
     },
-    "slot": {
+    "capability": {
       "type": "string",
       "minLength": 1,
-      "description": "能力槽名称，例如 web_search、web_extract、project_search、ledger。"
+      "description": "能力名称，例如 web_search、web_extract、project_search、repo_ingest。"
     },
     "action": {
       "type": "string",
       "minLength": 1,
-      "description": "槽动作，例如 search、extract、lookup、commit。"
+      "description": "能力动作，例如 search、extract、lookup、ingest、scan。"
     },
-    "adapter": {
+    "provider": {
       "type": "string",
       "minLength": 1,
       "description": "实际执行的适配器或 provider；失败时为最后尝试的 provider。"
     },
     "data": {
-      "description": "成功时的归一化数据。各槽在 TOOL.md 中定义字段。"
+      "description": "成功时的归一化数据。"
     },
     "error": {
       "oneOf": [
@@ -44,13 +44,19 @@
                 "AUTH_FAILED",
                 "INVALID_INPUT",
                 "UNKNOWN_SLOT",
+                "UNKNOWN_CAPABILITY",
+                "UNKNOWN_PROVIDER",
                 "UNKNOWN_ACTION",
+                "CAPABILITY_DISABLED",
+                "CAPABILITY_PENDING",
+                "TOOL_MISSING",
                 "TIMEOUT",
                 "RATE_LIMIT",
                 "UPSTREAM_ERROR",
                 "FALLBACK_EXHAUSTED",
                 "NOT_IMPLEMENTED",
                 "GATE_REJECTED",
+                "GATE_REQUIRED",
                 "LEDGER_INVALID",
                 "INTERNAL"
               ]
@@ -68,9 +74,9 @@
       "items": {
         "type": "object",
         "additionalProperties": false,
-        "required": ["slot", "from", "to", "reason"],
+        "required": ["capability", "from", "to", "reason"],
         "properties": {
-          "slot": { "type": "string", "minLength": 1 },
+          "capability": { "type": "string", "minLength": 1 },
           "from": { "type": "string", "minLength": 1 },
           "to": { "type": "string", "minLength": 1 },
           "reason": { "type": "string" }

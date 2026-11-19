@@ -3,6 +3,8 @@ import json
 import sys
 from pathlib import Path
 
+import pytest
+
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT))
 
@@ -18,16 +20,19 @@ def load_wf_tool():
 wf = load_wf_tool()
 
 
-def test_catalog_has_16_capabilities():
+def test_catalog_has_17_capabilities():
     data = wf.list_capabilities()
     caps = data["capabilities"]
-    assert len(caps) == 16
+    assert len(caps) == 17
     assert caps["web_search"]["kind"] == "adapter"
-    assert caps["repo_ingest"]["kind"] == "cli"
-    assert caps["package_meta"]["kind"] == "mcp"
+    assert caps["repo_ingest"]["kind"] == "adapter"
+    assert caps["repo_health"]["kind"] == "adapter"
+    assert caps["package_meta"]["kind"] == "adapter"
+    assert caps["package_security"]["status"] == "active"
+    assert caps["license_sbom"]["status"] == "active"
+    assert caps["dependency_graph"]["status"] == "active"
+    assert caps["structural_search"]["status"] == "active"
     assert caps["code_graph"]["status"] == "pending"
-    assert caps["package_security"]["status"] == "pending"
-    assert caps["license_sbom"]["status"] == "pending"
 
 
 def test_health_reports_pending_and_active():
@@ -35,6 +40,8 @@ def test_health_reports_pending_and_active():
     assert "capabilities" in data
     assert "code_graph" in data["pending"]
     assert data["capabilities"]["web_search"]["status"] in {"active", "degraded", "missing"}
+    assert data["capabilities"]["dependency_graph"]["status"] == "active"
+    assert data["capabilities"]["license_sbom"]["status"] == "active"
 
 
 def test_doctor_reports_runtime_and_hosts(tmp_path, monkeypatch):
@@ -47,7 +54,9 @@ def test_doctor_reports_runtime_and_hosts(tmp_path, monkeypatch):
     data = wf.doctor()
     assert "runtime" in data
     assert data["runtime"]["binExists"] is True
-    assert set(data["hosts"]) == {"haha", "claude", "dsh"}
+    assert {"antigravity", "claude", "cursor", "codex", "gemini", "haha", "dsh"}.issubset(
+        set(data["hosts"])
+    )
 
 
 def test_pending_capability_is_rejected():

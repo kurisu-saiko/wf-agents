@@ -1,0 +1,26 @@
+slot: structural_search
+version: "0.2.0"
+license: MIT
+os:
+  - windows
+  - linux
+  - macos
+actions:
+  - search
+  - symbols
+  - health
+providers:
+  builtin:
+    role: primary
+    env: []
+  ast-grep:
+    role: alternate
+    env: []
+    notes: 可选 ast-grep CLI 备选；主链零依赖可用。
+credentials: []
+writeSurface: []
+timeoutMs: 25000
+retry:
+  max: 1
+  backoffMs: 200
+notes: 内置多语言代码模式搜索与 Python AST/TS/Go/Rust 符号大纲提取，并兼容 ast-grep。

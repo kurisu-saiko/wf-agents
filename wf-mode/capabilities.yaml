@@ -1,11 +1,10 @@
 # 能力目录：装配工具与外部能力。
-# kind: adapter（内部适配器）| cli（本地工具）| mcp（宿主 MCP）| pending（未验证）
+# kind: adapter（内部零依赖适配器）| cli（本地工具）| mcp（宿主 MCP）| pending（待开放写能力）
 # status: active（已接入）| pending（仅登记）| missing（运行时不健康）
 version: 1
 
 runtime:
-  # 默认留空；用 .wf/config.local.json 或 WF_BIN/WF_VENV 覆盖。
-  # doctor 会报告实际解析路径。
+  # 默认留空；用 .wf/config.local.json 或 WF_BIN/WF_VENV 覆盖，也可自动探测 PATH。
   bin: ""
   venv: ""
 
@@ -14,113 +13,125 @@ capabilities:
     label: 网页搜索
     kind: adapter
     actions: [search, health]
-    providers: [tavily, exa]
+    providers: [tavily, exa, brave, searxng, duckduckgo]
     primary: tavily
     alternate: exa
-    fallback: [exa]
-    env: [TAVILY_API_KEY, TAVILY, EXA_API_KEY, EXA]
+    fallback: [brave, searxng, duckduckgo]
+    env: [TAVILY_API_KEY, TAVILY, EXA_API_KEY, EXA, BRAVE_API_KEY, BRAVE, SEARXNG_URL]
     status: active
-    notes: Tavily 主、Exa 备；用于发现线索与候选，不直接用摘要下结论。
+    notes: Tavily -> Exa -> Brave -> SearXNG -> DuckDuckGo（零密钥兜底）。
 
   web_extract:
     label: 网页正文抽取
     kind: adapter
     actions: [extract, health]
-    providers: [firecrawl, jina]
+    providers: [firecrawl, jina, direct]
     primary: firecrawl
     alternate: jina
-    fallback: [jina]
+    fallback: [direct]
     env: [FIRECRAWL_API_KEY, FIRECRAWL, JINA_API_KEY, JINA]
     status: active
-    notes: Firecrawl 主、Jina 备；读取真实正文，不接受标题或摘要。
+    notes: Firecrawl -> Jina -> Direct（零密钥内置 HTML->Markdown，支持 GitHub blob 转 raw）。
 
   project_search:
-    label: 项目发现
+    label: 项目与代码发现
     kind: adapter
-    actions: [search, lookup, health]
+    actions: [search, lookup, search_code, health]
     providers: [github]
     primary: github
     alternate: null
     env: [GITHUB_TOKEN, GH_TOKEN, GITHUB_MCP_TOKEN]
     status: active
-    notes: GitHub REST；token 可选。与 GitHub MCP 互补。
+    notes: GitHub 仓库发现、详细元数据与代码搜索，自动复用 gh CLI 登录令牌。
+
+  repo_ingest:
+    label: 仓库与项目读取
+    kind: adapter
+    actions: [ingest, tree, read, readme, health]
+    providers: [github_api, local, gitingest]
+    primary: github_api
+    alternate: local
+    fallback: [gitingest]
+    exec:
+      gitingest: ["{WF_VENV}/Scripts/gitingest.exe", "{repo}", "--output", "-"]
+    env: [GITHUB_TOKEN, GH_TOKEN, GITHUB_MCP_TOKEN]
+    status: active
+    notes: 无需克隆即可读取 GitHub/本地文件树、文件行片段、README 与高信噪比摘要。
+
+  repo_health:
+    label: 仓库维护健康度
+    kind: adapter
+    actions: [analyze, health]
+    providers: [github]
+    primary: github
+    alternate: null
+    env: [GITHUB_TOKEN, GH_TOKEN, GITHUB_MCP_TOKEN]
+    status: active
+    notes: 评估提交活跃度、总线因子、Release 节奏、许可证类别与维护风险标记。
 
   package_meta:
-    label: 包/仓库元数据
-    kind: mcp
-    actions: [lookup, health]
-    providers: [github-mcp]
-    primary: github-mcp
-    mcp_server: plugin_office-github_service
-    mcp_tools: [get_file_contents, list_releases, get_latest_release, list_tags, list_commits]
-    env: []
+    label: 包与发布元数据
+    kind: adapter
+    actions: [lookup, search, health]
+    providers: [auto, pypi, npm, crates, github]
+    primary: auto
+    alternate: pypi
+    fallback: [npm, crates, github]
+    env: [GITHUB_TOKEN, GH_TOKEN, GITHUB_MCP_TOKEN]
     status: active
-    notes: 由宿主 GitHub MCP 提供；wf-tool 只报告接入状态，实际调用由 agent 直接使用 MCP。
+    notes: 零密钥查询 PyPI / npm / crates.io / GitHub 包版本、下载量与许可信息。
 
   package_security:
-    label: 仓库健康/安全
-    kind: pending
-    actions: [score, health]
-    providers: [scorecard]
-    primary: scorecard
-    alternate: null
+    label: 依赖漏洞扫描
+    kind: adapter
+    actions: [scan, query, health]
+    providers: [osv, scorecard]
+    primary: osv
+    alternate: scorecard
     exec:
       scorecard: ["{WF_BIN}/scorecard/scorecard.exe", "--repo={repo}", "--format=json"]
     env: []
-    status: pending
-    notes: scorecard 可运行，但首次评分超过 60s；osv/trivy 需要本地路径。暂不接线，先在计划中列为缺口。
-
-  repo_ingest:
-    label: 仓库转上下文
-    kind: cli
-    actions: [ingest, health]
-    providers: [gitingest]
-    primary: gitingest
-    alternate: null
-    exec:
-      gitingest: ["{WF_VENV}/Scripts/gitingest.exe", "{repo}", "--output", "-"]
-    env: [GITHUB_TOKEN]
     status: active
-    notes: gitingest 主；code2prompt 可作备选，暂未接线。
+    notes: 通过 OSV.dev 实时漏洞库检查单包或本地/GitHub 仓库依赖的 CVE/GHSA。
+
+  license_sbom:
+    label: 许可证与 SBOM
+    kind: adapter
+    actions: [scan, health]
+    providers: [builtin, syft]
+    primary: builtin
+    alternate: syft
+    exec:
+      syft: ["{WF_BIN}/syft/syft.exe", "scan", "{path}", "-o", "json"]
+    env: []
+    status: active
+    notes: 内置 SPDX 许可证风险分类（宽松/弱传染/强传染）与多生态依赖清单扫描。
 
   dependency_graph:
-    label: 依赖与边界
-    kind: cli
-    actions: [graph, health]
-    providers: [pydeps]
-    primary: pydeps
-    alternate: null
+    label: 架构与依赖分析
+    kind: adapter
+    actions: [graph, analyze, health]
+    providers: [builtin, pydeps]
+    primary: builtin
+    alternate: pydeps
     exec:
       pydeps: ["{WF_VENV}/Scripts/pydeps.exe", "{path}", "--show-deps", "--no-output", "--noshow"]
     env: []
     status: active
-    notes: 仅覆盖本地 Python 项目；其他语言后续登记 import-linter / madge / dependency-cruiser。
+    notes: 零依赖多语言（Python AST / JS-TS / Go / Rust）模块依赖图、核心枢纽与循环依赖检测。
 
   structural_search:
-    label: 结构搜索
-    kind: cli
-    actions: [search, health]
-    providers: [ast-grep]
-    primary: ast-grep
-    alternate: null
+    label: 结构搜索与符号大纲
+    kind: adapter
+    actions: [search, symbols, health]
+    providers: [builtin, ast-grep]
+    primary: builtin
+    alternate: ast-grep
     exec:
       ast-grep: ["{WF_BIN}/ast-grep/ast-grep.exe", "run", "--pattern", "{pattern}", "--lang", "{lang}", "--json=compact", "{path}"]
     env: []
     status: active
-    notes: ast-grep 结构搜索；需要本地路径或已缓存仓库；远程代码检索优先用 GitHub MCP search_code。
-
-  license_sbom:
-    label: 许可与 SBOM
-    kind: pending
-    actions: [scan, health]
-    providers: [syft]
-    primary: syft
-    alternate: null
-    exec:
-      syft: ["{WF_BIN}/syft/syft.exe", "scan", "{path}", "-o", "json"]
-    env: []
-    status: pending
-    notes: syft/pip-licenses/reuse 需要本地仓库路径；计划模式不克隆，暂不接线。远程许可优先用 GitHub 元数据。
+    notes: 内置正则/字面量搜索与多语言符号提取，并兼容 ast-grep CLI。
 
   scaffold:
     label: 模板/脚手架
@@ -143,7 +154,7 @@ capabilities:
     primary: codebase-memory-mcp
     env: []
     status: pending
-    notes: 二进制已存在，但 MCP 未注册、未实测；先不用。
+    notes: 可选外部 MCP 扩展位；核心代码结构分析已由 dependency_graph 与 structural_search 提供。
 
   repo_fetch:
     label: 取仓库子集
@@ -153,7 +164,7 @@ capabilities:
     primary: git-sparse-checkout
     env: []
     status: pending
-    notes: 会写临时文件；需在执行阶段使用，暂不接线。
+    notes: 会写临时文件；需在执行阶段使用，只读调研请用 repo_ingest。
 
   toolchain:
     label: 工具链初始化

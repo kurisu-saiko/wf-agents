@@ -1,0 +1,40 @@
+slot: repo_ingest
+version: "0.2.0"
+license: MIT
+os:
+  - windows
+  - linux
+  - macos
+actions:
+  - ingest
+  - tree
+  - read
+  - readme
+  - health
+providers:
+  github_api:
+    role: primary
+    env:
+      - GITHUB_TOKEN
+      - GH_TOKEN
+      - GITHUB_MCP_TOKEN
+    endpoint: https://api.github.com
+  local:
+    role: alternate
+    env: []
+    notes: 本地项目目录/文件只读摘要、文件树与按行读取。
+  gitingest:
+    role: alternate
+    env:
+      - GITHUB_TOKEN
+    notes: 可选 CLI 备选；主链无需任何外部二进制即可工作。
+credentials:
+  - GITHUB_TOKEN
+  - GH_TOKEN
+  - GITHUB_MCP_TOKEN
+writeSurface: []
+timeoutMs: 30000
+retry:
+  max: 1
+  backoffMs: 300
+notes: 无需克隆即可读取 GitHub/本地仓库树、单文件行片段、README 与高信噪比上下文摘要。

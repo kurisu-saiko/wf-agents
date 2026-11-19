@@ -1,0 +1,486 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>wf-agents 工具配置面板</title>
+  <style>
+    :root {
+      --bg: #0b1020;
+      --surface: #121a2e;
+      --surface-2: #18233d;
+      --border: #253456;
+      --text: #e2e8f0;
+      --muted: #94a3b8;
+      --primary: #38bdf8;
+      --primary-fg: #082f49;
+      --ok-bg: #052e16;
+      --ok-fg: #4ade80;
+      --warn-bg: #451a03;
+      --warn-fg: #fbbf24;
+      --err-bg: #450a0a;
+      --err-fg: #f87171;
+      --pend-bg: #1e1b4b;
+      --pend-fg: #a5b4fc;
+      --neutral-bg: #1e293b;
+      --neutral-fg: #94a3b8;
+    }
+    @media (prefers-color-scheme: light) {
+      :root {
+        --bg: #f8fafc;
+        --surface: #ffffff;
+        --surface-2: #f1f5f9;
+        --border: #e2e8f0;
+        --text: #0f172a;
+        --muted: #475569;
+        --primary: #0284c7;
+        --primary-fg: #ffffff;
+        --ok-bg: #dcfce7;
+        --ok-fg: #166534;
+        --warn-bg: #fef3c7;
+        --warn-fg: #92400e;
+        --err-bg: #fee2e2;
+        --err-fg: #991b1b;
+        --pend-bg: #e0e7ff;
+        --pend-fg: #3730a3;
+        --neutral-bg: #f1f5f9;
+        --neutral-fg: #475569;
+      }
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "PingFang SC", "Microsoft YaHei", sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      line-height: 1.5;
+    }
+    .wrap { max-width: 1120px; margin: 0 auto; padding: 20px 18px 48px; }
+    .hero {
+      display: flex; flex-wrap: wrap; gap: 12px; align-items: center; justify-content: space-between;
+      padding: 18px 22px; border-radius: 16px;
+      background: linear-gradient(125deg, #0f172a, #1e3a8a);
+      color: #f8fafc; margin-bottom: 16px;
+      box-shadow: 0 8px 24px rgba(15, 23, 42, .25);
+    }
+    .hero h1 { margin: 0; font-size: 1.35rem; font-weight: 700; }
+    .hero p { margin: 4px 0 0; font-size: .88rem; color: #cbd5e1; }
+    .hero-actions { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+    .stage-pill {
+      padding: 4px 10px; border-radius: 999px; font-size: .78rem; font-weight: 600;
+      background: rgba(56, 189, 248, .2); color: #bae6fd; border: 1px solid rgba(56, 189, 248, .35);
+    }
+    .closed-banner {
+      display: none; padding: 14px 18px; border-radius: 12px; margin-bottom: 16px;
+      background: var(--warn-bg); color: var(--warn-fg); border: 1px solid currentColor;
+      font-weight: 600;
+    }
+    .closed-banner.show { display: block; }
+    .tabs { display: flex; gap: 6px; border-bottom: 1px solid var(--border); margin-bottom: 16px; overflow-x: auto; }
+    .tab-btn {
+      background: transparent; color: var(--muted); border: none; padding: 10px 14px;
+      cursor: pointer; font-size: .92rem; font-weight: 600; border-bottom: 2px solid transparent;
+      white-space: nowrap;
+    }
+    .tab-btn.active { color: var(--primary); border-bottom-color: var(--primary); }
+    .panel { display: none; }
+    .panel.active { display: block; }
+    .grid-4 { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 12px; margin-bottom: 18px; }
+    .grid-2 { display: grid; grid-template-columns: repeat(auto-fit, minmax(290px, 1fr)); gap: 12px; }
+    .card {
+      background: var(--surface); border: 1px solid var(--border); border-radius: 12px; padding: 14px 16px;
+      margin-bottom: 12px;
+    }
+    .metric-label { font-size: .8rem; color: var(--muted); }
+    .metric-val { font-size: 1.6rem; font-weight: 700; margin-top: 2px; }
+    .badge {
+      display: inline-block; padding: 2px 8px; border-radius: 999px;
+      font-size: .75rem; font-weight: 600; vertical-align: middle;
+    }
+    .b-active { background: var(--ok-bg); color: var(--ok-fg); }
+    .b-degraded { background: var(--warn-bg); color: var(--warn-fg); }
+    .b-missing { background: var(--err-bg); color: var(--err-fg); }
+    .b-pending { background: var(--pend-bg); color: var(--pend-fg); }
+    .b-disabled, .b-none, .b-yaml { background: var(--neutral-bg); color: var(--neutral-fg); }
+    .b-panel, .b-env, .b-gh-cli { background: rgba(56, 189, 248, .18); color: var(--primary); }
+    .row { display: flex; flex-wrap: wrap; gap: 12px; align-items: center; justify-content: space-between; }
+    .col-grow { flex: 1 1 260px; }
+    label { display: block; font-size: .82rem; color: var(--muted); margin-bottom: 4px; }
+    input[type="text"], input[type="password"], select {
+      width: 100%; padding: 8px 10px; border-radius: 8px;
+      border: 1px solid var(--border); background: var(--surface-2); color: var(--text);
+      font-size: .9rem;
+    }
+    .btn {
+      padding: 8px 14px; border-radius: 8px; border: 1px solid var(--border);
+      background: var(--surface-2); color: var(--text); cursor: pointer; font-weight: 600; font-size: .86rem;
+    }
+    .btn:hover { opacity: .9; }
+    .btn-primary { background: var(--primary); color: var(--primary-fg); border-color: transparent; }
+    .btn-danger { background: var(--err-bg); color: var(--err-fg); border-color: rgba(248,113,113,.3); }
+    .muted { color: var(--muted); font-size: .84rem; }
+    .toast {
+      margin-top: 12px; padding: 10px 14px; border-radius: 10px; font-size: .88rem; display: none;
+    }
+    .toast.show { display: block; }
+    .toast.ok { background: var(--ok-bg); color: var(--ok-fg); }
+    .toast.err { background: var(--err-bg); color: var(--err-fg); }
+    pre {
+      background: var(--surface-2); border: 1px solid var(--border); border-radius: 10px;
+      padding: 12px; overflow-x: auto; font-size: .8rem; max-height: 360px;
+    }
+    table { width: 100%; border-collapse: collapse; font-size: .88rem; }
+    th, td { text-align: left; padding: 8px 10px; border-bottom: 1px solid var(--border); }
+    th { color: var(--muted); font-weight: 600; }
+    code { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: .84em; }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <div class="hero">
+      <div>
+        <h1>wf-agents 工具配置面板</h1>
+        <p>首次交互自动开启用于检查与配置；进入计划模式后将自动关闭。</p>
+      </div>
+      <div class="hero-actions">
+        <span class="stage-pill" id="stagePill">阶段: init</span>
+        <button class="btn" onclick="refreshState()">刷新</button>
+        <button class="btn btn-danger" onclick="shutdownPanel()">关闭面板</button>
+      </div>
+    </div>
+
+    <div id="closedBanner" class="closed-banner">
+      已进入计划模式或面板已关闭，配置服务已自动停止。你可以安全关闭此浏览器标签页。
+    </div>
+
+    <div class="tabs">
+      <button class="tab-btn active" data-tab="overview">总览</button>
+      <button class="tab-btn" data-tab="capabilities">能力与顺序</button>
+      <button class="tab-btn" data-tab="secrets">API 密钥</button>
+      <button class="tab-btn" data-tab="paths">工具路径</button>
+      <button class="tab-btn" data-tab="diagnostics">诊断与连通测试</button>
+    </div>
+
+    <section id="tab-overview" class="panel active"></section>
+    <section id="tab-capabilities" class="panel"></section>
+    <section id="tab-secrets" class="panel"></section>
+    <section id="tab-paths" class="panel"></section>
+    <section id="tab-diagnostics" class="panel"></section>
+  </div>
+
+  <script>
+    window.__WF_TOKEN__ = "__WF_TOKEN_PLACEHOLDER__";
+    let appState = null;
+    let closedHandled = false;
+
+    document.querySelectorAll(".tab-btn").forEach((btn) => {
+      btn.addEventListener("click", () => {
+        document.querySelectorAll(".tab-btn").forEach((b) => b.classList.remove("active"));
+        document.querySelectorAll(".panel").forEach((p) => p.classList.remove("active"));
+        btn.classList.add("active");
+        document.getElementById("tab-" + btn.dataset.tab).classList.add("active");
+      });
+    });
+
+    function esc(s) {
+      return String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+    }
+
+    function badge(text, cls) {
+      return `<span class="badge b-${esc(cls)}">${esc(text)}</span>`;
+    }
+
+    async function api(path, method = "GET", body = null) {
+      const headers = { "X-WF-Token": window.__WF_TOKEN__ };
+      const opts = { method, headers };
+      if (body !== null) {
+        headers["Content-Type"] = "application/json";
+        opts.body = JSON.stringify(body);
+      }
+      const res = await fetch(path, opts);
+      return await res.json();
+    }
+
+    function showToast(id, ok, msg) {
+      const el = document.getElementById(id);
+      if (!el) return;
+      el.className = "toast show " + (ok ? "ok" : "err");
+      el.textContent = msg;
+    }
+
+    function markClosed() {
+      if (closedHandled) return;
+      closedHandled = true;
+      document.getElementById("closedBanner").classList.add("show");
+      document.getElementById("stagePill").textContent = "已自动关闭";
+      try { window.close(); } catch (_) {}
+    }
+
+    function renderOverview() {
+      const caps = appState.capabilities.capabilities || {};
+      const disabled = new Set(appState.disabled || []);
+      const counts = { active: 0, degraded: 0, missing: 0, pending: 0, disabled: 0 };
+      Object.entries(caps).forEach(([name, item]) => {
+        const st = disabled.has(name) ? "disabled" : (item.status || "missing");
+        counts[st] = (counts[st] || 0) + 1;
+      });
+      const rt = appState.doctor.runtime || {};
+      const hosts = appState.doctor.hosts || {};
+      const gh = appState.doctor.ghCli || {};
+      const hostBadges = Object.entries(hosts).map(([k, v]) =>
+        badge(`${k}: ${v.detected ? "已检测到" : "未检测到"}`, v.detected ? "active" : "disabled")
+      ).join(" ");
+
+      document.getElementById("tab-overview").innerHTML = `
+        <div class="grid-4">
+          <div class="card"><div class="metric-label">可用 active</div><div class="metric-val">${counts.active}</div></div>
+          <div class="card"><div class="metric-label">降级 degraded</div><div class="metric-val">${counts.degraded}</div></div>
+          <div class="card"><div class="metric-label">待接入 pending</div><div class="metric-val">${counts.pending}</div></div>
+          <div class="card"><div class="metric-label">已停用 disabled</div><div class="metric-val">${counts.disabled}</div></div>
+        </div>
+        <div class="grid-2">
+          <div class="card">
+            <h3 style="margin:0 0 8px">运行时与 GitHub 登录态</h3>
+            <p class="muted">工具目录：<code>${esc(rt.bin || "(自动探测 PATH)")}</code> ${badge(rt.binExists ? "存在" : "未指定", rt.binExists ? "active" : "disabled")}</p>
+            <p class="muted">虚拟环境：<code>${esc(rt.venv || "(使用系统 Python)")}</code> ${badge(rt.venvExists ? "存在" : "未指定", rt.venvExists ? "active" : "disabled")}</p>
+            <p class="muted">GitHub CLI：${badge(gh.installed ? (gh.authenticated ? "已登录 (自动复用令牌)" : "未登录") : "未安装", gh.authenticated ? "active" : "disabled")}</p>
+          </div>
+          <div class="card">
+            <h3 style="margin:0 0 8px">宿主生态探测</h3>
+            <div style="display:flex;flex-wrap:wrap;gap:6px">${hostBadges}</div>
+            <p class="muted" style="margin-top:10px">内置零依赖适配器已默认可用；无需强制配置付费 Key 即可进行项目发现、仓库读取、安全漏洞与架构分析。</p>
+          </div>
+        </div>
+      `;
+    }
+
+    function renderCapabilities() {
+      const caps = appState.capabilities.capabilities || {};
+      const disabled = new Set(appState.disabled || []);
+      const rows = Object.entries(caps).map(([name, item]) => {
+        const isDisabled = disabled.has(name);
+        const st = isDisabled ? "disabled" : (item.status || "missing");
+        const chain = [item.primary, item.alternate, ...(item.fallback || [])].filter(Boolean);
+        const uniq = [...new Set(chain)];
+        const lockToggle = item.kind === "pending";
+        return `
+          <div class="card">
+            <div class="row">
+              <div style="min-width:220px">
+                <strong>${esc(item.label)}</strong> <code>${esc(name)}</code>
+                <div style="margin-top:4px">${badge(item.kind, "pending")} ${badge(st, st)}</div>
+                <div class="muted" style="margin-top:4px">${esc(item.notes || "")}</div>
+              </div>
+              <div>
+                <label><input type="checkbox" class="cap-toggle" data-name="${esc(name)}" ${!isDisabled ? "checked" : ""} ${lockToggle ? "disabled" : ""} /> 启用</label>
+              </div>
+              <div class="col-grow">
+                <label>主备顺序（逗号分隔，可选: ${esc((item.providers || []).join(", "))}）</label>
+                <input type="text" class="cap-order" data-name="${esc(name)}" value="${esc(uniq.join(", "))}" ${lockToggle ? "disabled" : ""} />
+              </div>
+            </div>
+          </div>
+        `;
+      }).join("");
+      document.getElementById("tab-capabilities").innerHTML = `
+        ${rows}
+        <button class="btn btn-primary" onclick="saveCapabilities()">保存能力与顺序</button>
+        <div id="cap-toast" class="toast"></div>
+      `;
+    }
+
+    function renderSecrets() {
+      const secrets = appState.secrets || {};
+      const cards = Object.entries(secrets).map(([label, info]) => {
+        const sourceLabel = { panel: "面板", env: "环境变量", "gh-cli": "gh CLI", none: "未配置" }[info.source] || info.source;
+        return `
+          <div class="card">
+            <div class="row">
+              <div>
+                <strong>${esc(label)}</strong> ${badge(sourceLabel, info.source)} <code>${esc(info.masked || "未配置")}</code>
+              </div>
+              <label><input type="checkbox" class="sec-clear" data-label="${esc(label)}" /> 清除面板值</label>
+            </div>
+            <div style="margin-top:8px">
+              <label>新值（留空保持不变，写入本机数据目录不进仓库）</label>
+              <input type="password" class="sec-input" data-label="${esc(label)}" placeholder="输入 ${esc(info.canonical)}" />
+            </div>
+          </div>
+        `;
+      }).join("");
+      document.getElementById("tab-secrets").innerHTML = `
+        ${cards}
+        <button class="btn btn-primary" onclick="saveSecrets()">保存密钥</button>
+        <div id="sec-toast" class="toast"></div>
+      `;
+    }
+
+    function renderPaths() {
+      const cfg = appState.config || {};
+      const rt = cfg.runtime || {};
+      const caps = appState.capabilities.capabilities || {};
+      const cliPaths = cfg.cli_paths || {};
+      const cliCards = Object.entries(caps)
+        .filter(([, item]) => item.kind === "cli")
+        .map(([name, item]) => {
+          const provider = item.primary;
+          const val = (cliPaths[name] || {})[provider] || "";
+          return `
+            <div class="card">
+              <strong>${esc(item.label)}</strong> <code>${esc(name)}</code>
+              ${badge(item.commandExists ? "存在" : "未就绪", item.commandExists ? "active" : "missing")}
+              <div style="margin-top:8px">
+                <label>可执行文件路径（${esc(provider)}）</label>
+                <input type="text" class="cli-path" data-cap="${esc(name)}" data-prov="${esc(provider)}" value="${esc(val)}" placeholder="${esc(item.command || "")}" />
+              </div>
+            </div>
+          `;
+        }).join("");
+
+      document.getElementById("tab-paths").innerHTML = `
+        <div class="card">
+          <div class="grid-2">
+            <div>
+              <label>工具目录 bin（WF_BIN）</label>
+              <input type="text" id="rt-bin" value="${esc(rt.bin || "")}" placeholder="可选，留空自动探测 PATH" />
+            </div>
+            <div>
+              <label>虚拟环境目录 venv（WF_VENV）</label>
+              <input type="text" id="rt-venv" value="${esc(rt.venv || "")}" placeholder="可选，留空使用系统 Python" />
+            </div>
+          </div>
+        </div>
+        ${cliCards || '<p class="muted">当前所有核心检索与分析能力均由内置适配器直接提供，无需外部 CLI 路径。</p>'}
+        <div style="display:flex;gap:8px;margin-top:10px">
+          <button class="btn btn-primary" onclick="savePaths()">保存路径</button>
+          <button class="btn" onclick="resetPaths()">重置覆盖</button>
+        </div>
+        <div id="path-toast" class="toast"></div>
+      `;
+    }
+
+    function renderDiagnostics() {
+      const capNames = Object.keys(appState.capabilities.capabilities || {}).sort();
+      const opts = ["web_search", "web_extract", "project_search", "package_meta", "package_security"]
+        .filter((n) => capNames.includes(n))
+        .map((n) => `<option value="${esc(n)}">${esc(n)}</option>`).join("");
+      document.getElementById("tab-diagnostics").innerHTML = `
+        <div class="card">
+          <div class="row">
+            <div class="col-grow">
+              <label>选择能力执行实时连通测试</label>
+              <select id="probe-target">${opts}</select>
+            </div>
+            <button class="btn btn-primary" onclick="runProbe()">运行连通测试</button>
+            <button class="btn" onclick="runHealth()">全部 Health 检查</button>
+          </div>
+          <pre id="diag-output" style="margin-top:12px">点击上方按钮查看诊断结果...</pre>
+        </div>
+      `;
+    }
+
+    async function refreshState() {
+      try {
+        const res = await api("/api/state");
+        if (!res.ok) throw new Error(res.error || "加载失败");
+        appState = res.data;
+        const stage = (appState.session || {}).stage || "init";
+        document.getElementById("stagePill").textContent = "阶段: " + stage;
+        renderOverview();
+        renderCapabilities();
+        renderSecrets();
+        renderPaths();
+        renderDiagnostics();
+      } catch (err) {
+        markClosed();
+      }
+    }
+
+    async function saveCapabilities() {
+      const orders = {};
+      document.querySelectorAll(".cap-order").forEach((el) => {
+        if (!el.disabled) {
+          orders[el.dataset.name] = el.value.split(",").map((s) => s.trim()).filter(Boolean);
+        }
+      });
+      const disabled = [];
+      document.querySelectorAll(".cap-toggle").forEach((el) => {
+        if (!el.disabled && !el.checked) disabled.push(el.dataset.name);
+      });
+      const res = await api("/api/capabilities", "POST", { orders, disabled });
+      showToast("cap-toast", res.ok, res.ok ? "已保存能力启停与主备顺序" : (res.error || "保存失败"));
+      if (res.ok) await refreshState();
+    }
+
+    async function saveSecrets() {
+      const updates = {};
+      document.querySelectorAll(".sec-input").forEach((el) => {
+        if (el.value.trim()) updates[el.dataset.label] = el.value.trim();
+      });
+      const clears = [];
+      document.querySelectorAll(".sec-clear").forEach((el) => {
+        if (el.checked) clears.push(el.dataset.label);
+      });
+      const res = await api("/api/secrets", "POST", { updates, clears });
+      showToast("sec-toast", res.ok, res.ok ? "已安全保存到本地配置" : (res.error || "保存失败"));
+      if (res.ok) await refreshState();
+    }
+
+    async function savePaths() {
+      const runtime = {
+        bin: document.getElementById("rt-bin").value.trim(),
+        venv: document.getElementById("rt-venv").value.trim(),
+      };
+      const cli_paths = {};
+      document.querySelectorAll(".cli-path").forEach((el) => {
+        cli_paths[el.dataset.cap] = { [el.dataset.prov]: el.value.trim() };
+      });
+      const res = await api("/api/paths", "POST", { runtime, cli_paths });
+      showToast("path-toast", res.ok, res.ok ? "已保存路径覆盖" : (res.error || "保存失败"));
+      if (res.ok) await refreshState();
+    }
+
+    async function resetPaths() {
+      const res = await api("/api/paths/reset", "POST", {});
+      showToast("path-toast", res.ok, res.ok ? "已重置路径覆盖" : (res.error || "重置失败"));
+      if (res.ok) await refreshState();
+    }
+
+    async function runProbe() {
+      const target = document.getElementById("probe-target").value;
+      const out = document.getElementById("diag-output");
+      out.textContent = "测试中...";
+      const res = await api("/api/probe", "POST", { capability: target });
+      out.textContent = JSON.stringify(res, null, 2);
+    }
+
+    async function runHealth() {
+      const out = document.getElementById("diag-output");
+      out.textContent = "检查中...";
+      const res = await api("/api/health");
+      out.textContent = JSON.stringify(res, null, 2);
+    }
+
+    async function shutdownPanel() {
+      try {
+        await api("/api/shutdown", "POST", {});
+      } catch (_) {}
+      markClosed();
+    }
+
+    setInterval(async () => {
+      if (closedHandled) return;
+      try {
+        const res = await fetch("/health");
+        if (!res.ok) { markClosed(); return; }
+        const data = await res.json();
+        if (data.closing) markClosed();
+      } catch (_) {
+        markClosed();
+      }
+    }, 2000);
+
+    refreshState();
+  </script>
+</body>
+</html>

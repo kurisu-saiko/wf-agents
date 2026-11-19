@@ -46,13 +46,13 @@ def test_both_fail_returns_fallback_exhausted(monkeypatch):
     def always_fails(payload):
         raise ToolError("UPSTREAM_ERROR", "boom", allow_fallback=True)
 
-    monkeypatch.setitem(adapter.PROVIDER_FUNCS, "tavily", always_fails)
-    monkeypatch.setitem(adapter.PROVIDER_FUNCS, "exa", always_fails)
+    for prov in ("tavily", "exa", "brave", "searxng", "duckduckgo"):
+        monkeypatch.setitem(adapter.PROVIDER_FUNCS, prov, always_fails)
 
     env = wf_tool.dispatch("web_search", "search", {"query": "x"})
     assert env["ok"] is False
     assert env["error"]["code"] == "FALLBACK_EXHAUSTED"
-    assert len(env["error"]["details"]["attempts"]) == 2
+    assert len(env["error"]["details"]["attempts"]) == 5
 
 
 def test_web_extract_falls_back_to_jina(monkeypatch):
