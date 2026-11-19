@@ -1,7 +1,9 @@
-"""共用项目读取、GitHub 定位、语言识别、依赖解析与许可证识别工具。"""
+"""共用项目读取、GitHub 定位、.gitignore 过滤、依赖/锁文件解析与许可证识别工具。"""
 
 from __future__ import annotations
 
+import fnmatch
+import json
 import os
 import re
 from pathlib import Path
@@ -88,6 +90,14 @@ MANIFEST_FILES = {
     "docker-compose.yml",
     "docker-compose.yaml",
     "plugin.json",
+}
+
+LOCKFILE_NAMES = {
+    "package-lock.json",
+    "uv.lock",
+    "poetry.lock",
+    "Cargo.lock",
+    "go.sum",
 }
 
 EXT_LANG = {
@@ -204,26 +214,77 @@ def resolve_local_path(raw: str | Path | None) -> Path:
     return path.resolve()
 
 
+def load_gitignore_patterns(root: Path) -> list[str]:
+    gi = root / ".gitignore"
+    if not gi.is_file():
+        return []
+    patterns: list[str] = []
+    try:
+        for line in gi.read_text(encoding="utf-8", errors="replace").splitlines():
+            s = line.strip()
+            if not s or s.startswith("#") or s.startswith("!"):
+                continue
+            patterns.append(s)
+    except OSError:
+        return []
+    return patterns
+
+
+def _is_gitignored(rel_posix: str, is_dir: bool, patterns: list[str]) -> bool:
+    if not patterns:
+        return False
+    name = rel_posix.rsplit("/", 1)[-1]
+    for raw in patterns:
+        dir_only = raw.endswith("/")
+        pat = raw.rstrip("/")
+        if not pat:
+            continue
+        if dir_only and not is_dir:
+            # 目录规则也过滤其下文件
+            if any(fnmatch.fnmatch(part, pat.lstrip("/")) for part in rel_posix.split("/")[:-1]):
+                return True
+            continue
+        anchored = pat.startswith("/")
+        clean = pat.lstrip("/")
+        if anchored:
+            if fnmatch.fnmatch(rel_posix, clean):
+                return True
+        else:
+            if fnmatch.fnmatch(name, clean) or fnmatch.fnmatch(rel_posix, clean):
+                return True
+    return False
+
+
 def iter_project_files(
     root: Path,
     *,
     max_files: int = 2500,
     include_hidden: bool = False,
+    respect_gitignore: bool = True,
 ) -> list[str]:
     if root.is_file():
         return [root.name]
+    patterns = load_gitignore_patterns(root) if respect_gitignore else []
     results: list[str] = []
     for dirpath, dirnames, filenames in os.walk(root):
-        dirnames[:] = sorted(
-            d
-            for d in dirnames
-            if d not in IGNORE_DIRS and (include_hidden or not d.startswith("."))
-        )
         rel_dir = Path(dirpath).relative_to(root)
+        rel_prefix = "" if str(rel_dir) == "." else rel_dir.as_posix() + "/"
+
+        kept_dirs: list[str] = []
+        for d in sorted(dirnames):
+            if d in IGNORE_DIRS or (not include_hidden and d.startswith(".")):
+                continue
+            if _is_gitignored(rel_prefix + d, True, patterns):
+                continue
+            kept_dirs.append(d)
+        dirnames[:] = kept_dirs
+
         for fname in sorted(filenames):
             if not include_hidden and fname.startswith(".") and fname not in {".gitignore", ".env.example"}:
                 continue
-            rel = fname if str(rel_dir) == "." else (rel_dir / fname).as_posix()
+            rel = rel_prefix + fname
+            if _is_gitignored(rel, False, patterns):
+                continue
             results.append(rel)
             if len(results) >= max_files:
                 return results
@@ -235,23 +296,45 @@ def detect_language(rel_path: str) -> str:
     return EXT_LANG.get(ext, "")
 
 
-def license_category(spdx: str | None) -> str:
-    code = (spdx or "").strip().upper()
-    if not code or code in {"NOASSERTION", "NONE", "UNKNOWN"}:
+def _single_license_category(code: str) -> str:
+    c = code.strip().upper()
+    if not c or c in {"NOASSERTION", "NONE", "UNKNOWN"}:
         return "unknown"
-    if code in PERMISSIVE_LICENSES:
+    if c in PERMISSIVE_LICENSES:
         return "permissive"
-    if code in WEAK_COPYLEFT_LICENSES:
+    if c in WEAK_COPYLEFT_LICENSES:
         return "weak-copyleft"
-    if code in STRONG_COPYLEFT_LICENSES:
+    if c in STRONG_COPYLEFT_LICENSES:
         return "strong-copyleft"
-    if "AGPL" in code or "GPL" in code:
-        return "weak-copyleft" if "LGPL" in code else "strong-copyleft"
-    if "MPL" in code or "EPL" in code or "CDDL" in code:
+    if "AGPL" in c or "GPL" in c:
+        return "weak-copyleft" if "LGPL" in c else "strong-copyleft"
+    if "MPL" in c or "EPL" in c or "CDDL" in c:
         return "weak-copyleft"
-    if "MIT" in code or "APACHE" in code or "BSD" in code or "ISC" in code:
+    if "MIT" in c or "APACHE" in c or "BSD" in c or "ISC" in c:
         return "permissive"
     return "unknown"
+
+
+def license_category(spdx: str | None) -> str:
+    """支持复合 SPDX 表达式（如 'MIT OR Apache-2.0' / 'MIT AND GPL-3.0'）。"""
+    raw = (spdx or "").strip()
+    if not raw:
+        return "unknown"
+    if " OR " in raw.upper():
+        parts = [p.strip(" ()") for p in re.split(r"\s+OR\s+", raw, flags=re.I) if p.strip()]
+        cats = [_single_license_category(p) for p in parts]
+        for pref in ("permissive", "weak-copyleft", "strong-copyleft"):
+            if pref in cats:
+                return pref
+        return "unknown"
+    if " AND " in raw.upper():
+        parts = [p.strip(" ()") for p in re.split(r"\s+AND\s+", raw, flags=re.I) if p.strip()]
+        cats = [_single_license_category(p) for p in parts]
+        for strict in ("strong-copyleft", "weak-copyleft", "unknown", "permissive"):
+            if strict in cats:
+                return strict
+        return "unknown"
+    return _single_license_category(raw)
 
 
 def detect_license_from_text(text: str) -> tuple[str, str]:
@@ -299,32 +382,35 @@ def _clean_version(spec: str) -> str:
 
 
 def parse_dependencies_from_texts(files: dict[str, str]) -> list[dict[str, str]]:
-    """从常见清单文件解析依赖清单。"""
-    deps: list[dict[str, str]] = []
-    seen: set[tuple[str, str, str]] = set()
+    """从清单与锁文件解析依赖（同生态+包名时，锁文件的精确版本优先覆盖范围约束）。"""
+    deps_by_key: dict[tuple[str, str], dict[str, str]] = {}
 
-    def add(name: str, spec: str, ecosystem: str, scope: str, source: str) -> None:
+    def put(name: str, spec: str, ecosystem: str, scope: str, source: str, *, locked: bool = False) -> None:
         norm = name.strip()
         if not norm:
             return
-        key = (ecosystem.lower(), norm.lower(), scope)
-        if key in seen:
+        key = (ecosystem.lower(), norm.lower())
+        existing = deps_by_key.get(key)
+        if existing and existing.get("locked") and not locked:
             return
-        seen.add(key)
-        deps.append(
-            {
-                "name": norm,
-                "versionSpec": spec.strip(),
-                "version": _clean_version(spec),
-                "ecosystem": ecosystem,
-                "scope": scope,
-                "source": source,
-            }
-        )
+        deps_by_key[key] = {
+            "name": norm,
+            "versionSpec": spec.strip(),
+            "version": _clean_version(spec),
+            "ecosystem": ecosystem,
+            "scope": scope,
+            "source": source,
+            "locked": locked,  # type: ignore[dict-item]
+        }
 
-    for rel, content in files.items():
-        base = Path(rel).name
-        lower = base.lower()
+    # 先解析普通清单，再解析锁文件以便精确版本覆盖
+    ordered = sorted(
+        files.items(),
+        key=lambda kv: (1 if Path(kv[0]).name in LOCKFILE_NAMES else 0, kv[0]),
+    )
+
+    for rel, content in ordered:
+        lower = Path(rel).name.lower()
         if lower.startswith("requirements") and lower.endswith(".txt"):
             scope = "dev" if "dev" in lower or "test" in lower else "runtime"
             for line in content.splitlines():
@@ -332,7 +418,7 @@ def parse_dependencies_from_texts(files: dict[str, str]) -> list[dict[str, str]]
                 if not stripped or stripped.startswith(("-", "--", "git+", "http://", "https://")):
                     continue
                 name, spec = _parse_pep508(stripped)
-                add(name, spec, "PyPI", scope, rel)
+                put(name, spec, "PyPI", scope, rel, locked=spec.startswith("=="))
 
         elif lower == "pyproject.toml" and tomllib is not None:
             try:
@@ -344,23 +430,21 @@ def parse_dependencies_from_texts(files: dict[str, str]) -> list[dict[str, str]]
                 for item in proj.get("dependencies") or []:
                     if isinstance(item, str):
                         name, spec = _parse_pep508(item)
-                        add(name, spec, "PyPI", "runtime", rel)
+                        put(name, spec, "PyPI", "runtime", rel)
                 for group, items in (proj.get("optional-dependencies") or {}).items():
                     if isinstance(items, list):
                         for item in items:
                             if isinstance(item, str):
                                 name, spec = _parse_pep508(item)
-                                add(name, spec, "PyPI", f"optional:{group}", rel)
+                                put(name, spec, "PyPI", f"optional:{group}", rel)
                 poetry = ((parsed.get("tool") or {}).get("poetry") or {})
                 for pkg, ver in (poetry.get("dependencies") or {}).items():
                     if pkg.lower() == "python":
                         continue
                     spec = ver if isinstance(ver, str) else str((ver or {}).get("version", "")) if isinstance(ver, dict) else ""
-                    add(str(pkg), spec, "PyPI", "runtime", rel)
+                    put(str(pkg), spec, "PyPI", "runtime", rel)
 
         elif lower == "package.json":
-            import json
-
             try:
                 pkg = json.loads(content)
             except ValueError:
@@ -374,7 +458,36 @@ def parse_dependencies_from_texts(files: dict[str, str]) -> list[dict[str, str]]
                     mapping = pkg.get(section) or {}
                     if isinstance(mapping, dict):
                         for name, spec in mapping.items():
-                            add(str(name), str(spec), "npm", scope, rel)
+                            put(str(name), str(spec), "npm", scope, rel)
+
+        elif lower == "package-lock.json":
+            try:
+                lock = json.loads(content)
+            except ValueError:
+                lock = {}
+            if isinstance(lock, dict):
+                packages = lock.get("packages") or {}
+                if isinstance(packages, dict):
+                    for pkg_path, info in packages.items():
+                        if not pkg_path or not isinstance(info, dict) or not info.get("version"):
+                            continue
+                        if "node_modules/" in pkg_path:
+                            pkg_name = pkg_path.split("node_modules/")[-1]
+                            scope = "dev" if info.get("dev") else "runtime"
+                            put(pkg_name, str(info["version"]), "npm", scope, rel, locked=True)
+                for pkg_name, info in (lock.get("dependencies") or {}).items():
+                    if isinstance(info, dict) and info.get("version"):
+                        scope = "dev" if info.get("dev") else "runtime"
+                        put(str(pkg_name), str(info["version"]), "npm", scope, rel, locked=True)
+
+        elif lower in {"uv.lock", "poetry.lock"} and tomllib is not None:
+            try:
+                lock_toml = tomllib.loads(content)
+            except Exception:
+                lock_toml = {}
+            for pkg in (lock_toml.get("package") or []) if isinstance(lock_toml, dict) else []:
+                if isinstance(pkg, dict) and pkg.get("name") and pkg.get("version"):
+                    put(str(pkg["name"]), str(pkg["version"]), "PyPI", "runtime", rel, locked=True)
 
         elif lower == "cargo.toml" and tomllib is not None:
             try:
@@ -387,7 +500,16 @@ def parse_dependencies_from_texts(files: dict[str, str]) -> list[dict[str, str]]
                     if isinstance(mapping, dict):
                         for name, val in mapping.items():
                             spec = val if isinstance(val, str) else str(val.get("version", "")) if isinstance(val, dict) else ""
-                            add(str(name), spec, "crates.io", scope, rel)
+                            put(str(name), spec, "crates.io", scope, rel)
+
+        elif lower == "cargo.lock" and tomllib is not None:
+            try:
+                cargo_lock = tomllib.loads(content)
+            except Exception:
+                cargo_lock = {}
+            for pkg in (cargo_lock.get("package") or []) if isinstance(cargo_lock, dict) else []:
+                if isinstance(pkg, dict) and pkg.get("name") and pkg.get("version"):
+                    put(str(pkg["name"]), str(pkg["version"]), "crates.io", "runtime", rel, locked=True)
 
         elif lower == "go.mod":
             in_block = False
@@ -405,6 +527,11 @@ def parse_dependencies_from_texts(files: dict[str, str]) -> list[dict[str, str]]
                     body = stripped[8:].strip() if stripped.startswith("require ") else stripped
                     parts = body.split()
                     if len(parts) >= 2:
-                        add(parts[0], parts[1], "Go", "runtime", rel)
+                        put(parts[0], parts[1], "Go", "runtime", rel, locked=True)
 
-    return deps
+    result: list[dict[str, str]] = []
+    for item in deps_by_key.values():
+        cleaned = dict(item)
+        cleaned.pop("locked", None)
+        result.append(cleaned)
+    return result

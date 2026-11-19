@@ -1,13 +1,14 @@
-"""web_extract：Firecrawl -> Jina Reader -> Direct（零密钥内置 HTML/Markdown 抽取）。"""
+"""web_extract：Firecrawl -> Jina Reader -> Direct（高保真零密钥 HTML/Markdown/GitHub 抽取）。"""
 
 from __future__ import annotations
 
+import base64
 import re
 from html.parser import HTMLParser
 from typing import Any, Callable
 from urllib.parse import urlparse
 
-from tools import cache, http_client
+from tools import cache, http_client, repo_utils
 from tools.errors import ToolError
 from tools.util import first_env, utc_now
 
@@ -18,6 +19,7 @@ DEFAULT_MAX_CHARS = 24000
 MAX_CHARS_CAP = 60000
 
 _GITHUB_BLOB_RE = re.compile(r"^/([^/]+)/([^/]+)/blob/([^/]+)/(.+)$")
+_GITHUB_ROOT_RE = re.compile(r"^/([^/]+)/([^/]+)/?$")
 
 
 def _url(payload: dict[str, Any]) -> str:
@@ -35,8 +37,7 @@ def _max_chars(payload: dict[str, Any]) -> int:
     if raw is None or raw == "":
         return DEFAULT_MAX_CHARS
     try:
-        val = int(raw)
-        return max(1000, min(MAX_CHARS_CAP, val))
+        return max(1000, min(MAX_CHARS_CAP, int(raw)))
     except (TypeError, ValueError) as exc:
         raise ToolError("INVALID_INPUT", "maxChars 必须是整数") from exc
 
@@ -52,8 +53,19 @@ def normalize_fetch_url(url: str) -> str:
     return url
 
 
+def _github_root_repo(url: str) -> tuple[str, str] | None:
+    parsed = urlparse(url)
+    if parsed.netloc.lower() in {"github.com", "www.github.com"}:
+        match = _GITHUB_ROOT_RE.match(parsed.path)
+        if match:
+            owner, repo = match.groups()
+            if owner not in {"orgs", "users", "topics", "search", "explore", "settings"}:
+                return owner, repo.removesuffix(".git")
+    return None
+
+
 class _ReadableHTMLParser(HTMLParser):
-    """零依赖 HTML -> 紧凑 Markdown 文本抽取器。"""
+    """零依赖 HTML -> 高保真 Markdown 抽取器（保留链接、代码块语言、表格、引用与标题）。"""
 
     SKIP_TAGS = {"script", "style", "noscript", "svg", "nav", "footer", "aside", "template"}
     HEADING_LEVEL = {"h1": "# ", "h2": "## ", "h3": "### ", "h4": "#### "}
@@ -67,8 +79,21 @@ class _ReadableHTMLParser(HTMLParser):
         self._in_title = False
         self._in_pre = False
         self._in_code = False
+        self._in_link = False
+        self._link_href = ""
+        self._link_text: list[str] = []
         self._title_buf: list[str] = []
         self._chunks: list[str] = []
+        self._main_chunks: list[str] = []
+        self._main_depth = 0
+        self._row_cells: list[str] = []
+        self._in_cell = False
+        self._cell_buf: list[str] = []
+
+    def _emit(self, text: str) -> None:
+        self._chunks.append(text)
+        if self._main_depth > 0:
+            self._main_chunks.append(text)
 
     def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
         t = tag.lower()
@@ -88,22 +113,46 @@ class _ReadableHTMLParser(HTMLParser):
         if self._skip_depth > 0:
             return
 
+        if t in {"main", "article"}:
+            self._main_depth += 1
+
         if t == "title":
             self._in_title = True
         elif t in self.HEADING_LEVEL:
-            self._chunks.append("\n\n" + self.HEADING_LEVEL[t])
-        elif t in {"p", "section", "article", "tr"}:
-            self._chunks.append("\n\n")
+            self._emit("\n\n" + self.HEADING_LEVEL[t])
+        elif t in {"p", "section"}:
+            self._emit("\n\n")
+        elif t == "blockquote":
+            self._emit("\n\n> ")
+        elif t == "hr":
+            self._emit("\n\n---\n\n")
         elif t == "br":
-            self._chunks.append("\n")
+            self._emit("\n")
         elif t == "li":
-            self._chunks.append("\n- ")
+            self._emit("\n- ")
+        elif t == "tr":
+            self._row_cells = []
+        elif t in {"th", "td"}:
+            self._in_cell = True
+            self._cell_buf = []
         elif t == "pre":
             self._in_pre = True
-            self._chunks.append("\n\n```\n")
-        elif t == "code" and not self._in_pre:
-            self._in_code = True
-            self._chunks.append("`")
+            self._emit("\n\n```")
+        elif t == "code":
+            if self._in_pre:
+                cls = attr_map.get("class") or ""
+                lang_match = re.search(r"language-([A-Za-z0-9_+-]+)", cls)
+                lang = lang_match.group(1) if lang_match else ""
+                self._emit(lang + "\n")
+            else:
+                self._in_code = True
+                self._emit("`")
+        elif t == "a":
+            href = attr_map.get("href") or ""
+            if href.startswith(("http://", "https://")):
+                self._in_link = True
+                self._link_href = href
+                self._link_text = []
 
     def handle_endtag(self, tag: str) -> None:
         t = tag.lower()
@@ -112,17 +161,34 @@ class _ReadableHTMLParser(HTMLParser):
             return
         if self._skip_depth > 0:
             return
+
+        if t in {"main", "article"}:
+            self._main_depth = max(0, self._main_depth - 1)
+
         if t == "title":
             self._in_title = False
             self.title = " ".join("".join(self._title_buf).split())
-        elif t in self.HEADING_LEVEL or t in {"p", "li"}:
-            self._chunks.append("\n")
+        elif t in self.HEADING_LEVEL or t in {"p", "li", "blockquote"}:
+            self._emit("\n")
+        elif t in {"th", "td"} and self._in_cell:
+            self._in_cell = False
+            self._row_cells.append(" ".join("".join(self._cell_buf).split()))
+        elif t == "tr" and self._row_cells:
+            self._emit("\n| " + " | ".join(self._row_cells) + " |")
+            self._row_cells = []
         elif t == "pre":
             self._in_pre = False
-            self._chunks.append("\n```\n\n")
+            self._emit("\n```\n\n")
         elif t == "code" and not self._in_pre and self._in_code:
             self._in_code = False
-            self._chunks.append("`")
+            self._emit("`")
+        elif t == "a" and self._in_link:
+            self._in_link = False
+            label = " ".join("".join(self._link_text).split())
+            if label:
+                self._emit(f"[{label}]({self._link_href})")
+            self._link_href = ""
+            self._link_text = []
 
     def handle_data(self, data: str) -> None:
         if self._in_title:
@@ -130,21 +196,30 @@ class _ReadableHTMLParser(HTMLParser):
             return
         if self._skip_depth > 0:
             return
+        if self._in_cell:
+            self._cell_buf.append(data)
+            return
+        if self._in_link:
+            self._link_text.append(data)
+            return
         if self._in_pre:
-            self._chunks.append(data)
+            self._emit(data)
         else:
             collapsed = re.sub(r"[ \t\r\n]+", " ", data)
             if collapsed:
-                self._chunks.append(collapsed)
+                self._emit(collapsed)
 
     def markdown(self) -> str:
-        joined = "".join(self._chunks)
-        joined = re.sub(r"\n{3,}", "\n\n", joined)
-        return joined.strip()
+        main_text = re.sub(r"\n{3,}", "\n\n", "".join(self._main_chunks)).strip()
+        full_text = re.sub(r"\n{3,}", "\n\n", "".join(self._chunks)).strip()
+        # 当页面存在实质性的 <main>/<article> 时优先返回主内容，剔除边缘噪音
+        if len(main_text) >= 120:
+            return main_text
+        return full_text
 
 
 def html_to_markdown(raw_text: str) -> tuple[str, str, str]:
-    """将 HTML 转换为紧凑文本并提取 title / publishedTime；非 HTML 原文直出。"""
+    """将 HTML 转换为紧凑 Markdown 并提取 title / publishedTime；非 HTML 原文直出。"""
     head = (raw_text or "")[:1200].lower()
     if not any(marker in head for marker in ("<html", "<!doctype", "<head", "<body", "<article", "<main")):
         return "", "", (raw_text or "").strip()
@@ -233,6 +308,45 @@ def _extract_jina(payload: dict[str, Any]) -> dict[str, Any]:
     return output
 
 
+def _extract_github_root(owner: str, repo: str, url: str, limit: int) -> dict[str, Any]:
+    meta = http_client.get_json(
+        f"https://api.github.com/repos/{owner}/{repo}",
+        headers=repo_utils.github_headers(),
+        provider="direct",
+    )
+    readme_text = ""
+    try:
+        rd = http_client.get_json(
+            f"https://api.github.com/repos/{owner}/{repo}/readme",
+            headers=repo_utils.github_headers(),
+            provider="direct",
+        )
+        b64 = str(rd.get("content") or "")
+        if b64:
+            readme_text = base64.b64decode(b64).decode("utf-8", errors="replace")
+    except ToolError:
+        readme_text = ""
+
+    lic = (meta.get("license") or {}).get("spdx_id") if isinstance(meta.get("license"), dict) else ""
+    header = (
+        f"# {meta.get('full_name') or f'{owner}/{repo}'}\n\n"
+        f"{meta.get('description') or ''}\n\n"
+        f"- Stars: {meta.get('stargazers_count', 0)} | License: {lic or 'UNKNOWN'} | "
+        f"Language: {meta.get('language') or '-'} | Pushed: {meta.get('pushed_at') or '-'}\n\n"
+    )
+    return {
+        "url": url,
+        "fetchedUrl": f"https://api.github.com/repos/{owner}/{repo}",
+        "title": str(meta.get("full_name") or f"{owner}/{repo}"),
+        "text": (header + readme_text)[:limit],
+        "metadata": {
+            "provider": "direct",
+            "fetchedAt": utc_now(),
+            "publishedTime": str(meta.get("pushed_at") or ""),
+        },
+    }
+
+
 def _extract_direct(payload: dict[str, Any]) -> dict[str, Any]:
     url = _url(payload)
     limit = _max_chars(payload)
@@ -242,6 +356,16 @@ def _extract_direct(payload: dict[str, Any]) -> dict[str, Any]:
     if isinstance(cached, dict):
         cached["_cached"] = True
         return cached
+
+    gh_root = _github_root_repo(url)
+    if gh_root is not None:
+        try:
+            output = _extract_github_root(gh_root[0], gh_root[1], url, limit)
+            cache.put(SLOT, "direct", cache_key, output)
+            output["_cached"] = False
+            return output
+        except ToolError:
+            pass
 
     raw = http_client.get_text(
         fetch_url,

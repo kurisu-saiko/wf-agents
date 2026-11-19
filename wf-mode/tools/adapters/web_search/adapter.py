@@ -1,6 +1,6 @@
-"""web_search：Tavily -> Exa -> Brave -> SearXNG -> DuckDuckGo（零密钥兜底）。
+"""web_search：Tavily -> Exa -> Brave -> SearXNG -> DuckDuckGo (HTML + Lite 双通道零密钥兜底)。
 
-只做认证、调用、HTML/JSON 归一化与缓存；不写业务状态，不把密钥放进错误或返回值。
+只做认证、调用、URL 归一化去重与缓存；不写业务状态，不把密钥放进错误或返回值。
 """
 
 from __future__ import annotations
@@ -8,7 +8,7 @@ from __future__ import annotations
 import re
 from html.parser import HTMLParser
 from typing import Any, Callable
-from urllib.parse import parse_qs, unquote, urlparse
+from urllib.parse import parse_qs, unquote, urlencode, urlparse, urlunparse
 
 from tools import cache, http_client
 from tools.errors import ToolError
@@ -17,6 +17,7 @@ from tools.util import first_env, utc_now
 SLOT = "web_search"
 ACTIONS = ("search", "health")
 PROVIDERS = ("tavily", "exa", "brave", "searxng", "duckduckgo")
+_TRACKING_PARAMS = {"utm_source", "utm_medium", "utm_campaign", "utm_term", "utm_content", "ref", "fbclid", "gclid"}
 
 
 def _query(payload: dict[str, Any]) -> str:
@@ -56,6 +57,45 @@ def _days(payload: dict[str, Any]) -> int | None:
         return val if val > 0 else None
     except (TypeError, ValueError):
         return None
+
+
+def _clean_url(url: str) -> str:
+    raw = url.strip()
+    try:
+        parsed = urlparse(raw)
+        if not parsed.scheme or not parsed.netloc:
+            return raw
+        qs = parse_qs(parsed.query, keep_blank_values=True)
+        filtered = {k: v for k, v in qs.items() if k.lower() not in _TRACKING_PARAMS}
+        new_query = urlencode(filtered, doseq=True)
+        return urlunparse((parsed.scheme, parsed.netloc, parsed.path, parsed.params, new_query, ""))
+    except ValueError:
+        return raw
+
+
+def _finalize_results(items: list[dict[str, Any]], limit: int) -> list[dict[str, Any]]:
+    seen: set[str] = set()
+    out: list[dict[str, Any]] = []
+    for item in items:
+        url = _clean_url(str(item.get("url") or ""))
+        if not url or url in seen:
+            continue
+        seen.add(url)
+        domain = urlparse(url).netloc.lower()
+        entry: dict[str, Any] = {
+            "title": str(item.get("title") or "").strip(),
+            "url": url,
+            "domain": domain,
+            "snippet": str(item.get("snippet") or "").strip(),
+        }
+        if item.get("publishedAt"):
+            entry["publishedAt"] = str(item["publishedAt"])
+        if item.get("score") is not None:
+            entry["score"] = item["score"]
+        out.append(entry)
+        if len(out) >= limit:
+            break
+    return out
 
 
 def _search_tavily(payload: dict[str, Any]) -> dict[str, Any]:
@@ -100,23 +140,20 @@ def _search_tavily(payload: dict[str, Any]) -> dict[str, Any]:
             details={"provider": "tavily"},
             allow_fallback=True,
         )
-    results = []
-    for item in raw_results[:limit]:
+    normalized = []
+    for item in raw_results:
         if not isinstance(item, dict):
             continue
-        url = str(item.get("url") or "").strip()
-        if not url:
-            continue
-        result: dict[str, Any] = {
-            "title": str(item.get("title") or "").strip(),
-            "url": url,
-            "snippet": str(item.get("content") or item.get("snippet") or "").strip(),
-        }
-        published = item.get("published_date") or item.get("publishedDate") or item.get("published_at")
-        if published:
-            result["publishedAt"] = str(published)
-        results.append(result)
-    output = {"query": query, "results": results}
+        normalized.append(
+            {
+                "title": item.get("title") or "",
+                "url": item.get("url") or "",
+                "snippet": item.get("content") or item.get("snippet") or "",
+                "publishedAt": item.get("published_date") or item.get("publishedDate") or item.get("published_at"),
+                "score": item.get("score"),
+            }
+        )
+    output = {"query": query, "results": _finalize_results(normalized, limit)}
     cache.put(SLOT, "tavily", cache_key, output)
     output["_cached"] = False
     return output
@@ -165,23 +202,20 @@ def _search_exa(payload: dict[str, Any]) -> dict[str, Any]:
             details={"provider": "exa"},
             allow_fallback=True,
         )
-    results = []
-    for item in raw_results[:limit]:
+    normalized = []
+    for item in raw_results:
         if not isinstance(item, dict):
             continue
-        url = str(item.get("url") or "").strip()
-        if not url:
-            continue
-        result: dict[str, Any] = {
-            "title": str(item.get("title") or "").strip(),
-            "url": url,
-            "snippet": str(item.get("text") or item.get("summary") or "").strip(),
-        }
-        published = item.get("publishedDate") or item.get("published_date")
-        if published:
-            result["publishedAt"] = str(published)
-        results.append(result)
-    output = {"query": query, "results": results}
+        normalized.append(
+            {
+                "title": item.get("title") or "",
+                "url": item.get("url") or "",
+                "snippet": item.get("text") or item.get("summary") or "",
+                "publishedAt": item.get("publishedDate") or item.get("published_date"),
+                "score": item.get("score"),
+            }
+        )
+    output = {"query": query, "results": _finalize_results(normalized, limit)}
     cache.put(SLOT, "exa", cache_key, output)
     output["_cached"] = False
     return output
@@ -218,22 +252,17 @@ def _search_brave(payload: dict[str, Any]) -> dict[str, Any]:
             details={"provider": "brave"},
             allow_fallback=True,
         )
-    results = []
-    for item in raw_results[:limit]:
-        if not isinstance(item, dict):
-            continue
-        url = str(item.get("url") or "").strip()
-        if not url:
-            continue
-        result: dict[str, Any] = {
-            "title": str(item.get("title") or "").strip(),
-            "url": url,
-            "snippet": str(item.get("description") or "").strip(),
+    normalized = [
+        {
+            "title": item.get("title") or "",
+            "url": item.get("url") or "",
+            "snippet": item.get("description") or "",
+            "publishedAt": item.get("page_age"),
         }
-        if item.get("page_age"):
-            result["publishedAt"] = str(item["page_age"])
-        results.append(result)
-    output = {"query": query, "results": results}
+        for item in raw_results
+        if isinstance(item, dict)
+    ]
+    output = {"query": query, "results": _finalize_results(normalized, limit)}
     cache.put(SLOT, "brave", cache_key, output)
     output["_cached"] = False
     return output
@@ -270,29 +299,25 @@ def _search_searxng(payload: dict[str, Any]) -> dict[str, Any]:
             details={"provider": "searxng"},
             allow_fallback=True,
         )
-    results = []
-    for item in raw_results[:limit]:
-        if not isinstance(item, dict):
-            continue
-        url = str(item.get("url") or "").strip()
-        if not url:
-            continue
-        result: dict[str, Any] = {
-            "title": str(item.get("title") or "").strip(),
-            "url": url,
-            "snippet": str(item.get("content") or "").strip(),
+    normalized = [
+        {
+            "title": item.get("title") or "",
+            "url": item.get("url") or "",
+            "snippet": item.get("content") or "",
+            "publishedAt": item.get("publishedDate"),
+            "score": item.get("score"),
         }
-        if item.get("publishedDate"):
-            result["publishedAt"] = str(item["publishedDate"])
-        results.append(result)
-    output = {"query": query, "results": results}
+        for item in raw_results
+        if isinstance(item, dict)
+    ]
+    output = {"query": query, "results": _finalize_results(normalized, limit)}
     cache.put(SLOT, "searxng", cache_key, output)
     output["_cached"] = False
     return output
 
 
 class _DuckDuckGoParser(HTMLParser):
-    """解析 DuckDuckGo HTML 接口搜索结果，不依赖第三方 HTML 解析库。"""
+    """解析 DuckDuckGo HTML 接口搜索结果。"""
 
     def __init__(self) -> None:
         super().__init__()
@@ -307,19 +332,19 @@ class _DuckDuckGoParser(HTMLParser):
         attr_map = dict(attrs)
         cls = attr_map.get("class") or ""
         classes = set(cls.split())
-        if tag == "a" and "result__a" in classes:
+        if tag == "a" and ("result__a" in classes or "result-link" in classes):
             self._flush_current()
             self._in_title = True
             self._cur_href = str(attr_map.get("href") or "")
             self._cur_title = []
             self._cur_snippet = []
-        elif tag in {"a", "div", "span"} and "result__snippet" in classes:
+        elif tag in {"a", "div", "span", "td"} and ("result__snippet" in classes or "result-snippet" in classes):
             self._in_snippet = True
 
     def handle_endtag(self, tag: str) -> None:
         if tag == "a" and self._in_title:
             self._in_title = False
-        elif tag in {"a", "div", "span"} and self._in_snippet:
+        elif tag in {"a", "div", "span", "td"} and self._in_snippet:
             self._in_snippet = False
             self._flush_current()
 
@@ -359,11 +384,11 @@ def _unwrap_ddg_url(href: str) -> str:
     return raw
 
 
-def parse_duckduckgo_html(html_text: str, limit: int = 5) -> list[dict[str, str]]:
+def parse_duckduckgo_html(html_text: str, limit: int = 5) -> list[dict[str, Any]]:
     parser = _DuckDuckGoParser()
     parser.feed(html_text)
     parser.close()
-    return parser.results[:limit]
+    return _finalize_results(parser.results, limit)
 
 
 def _search_duckduckgo(payload: dict[str, Any]) -> dict[str, Any]:
@@ -381,25 +406,39 @@ def _search_duckduckgo(payload: dict[str, Any]) -> dict[str, Any]:
         cached["_cached"] = True
         return cached
 
-    html_text = http_client.get_text(
-        "https://html.duckduckgo.com/html/",
-        params={"q": effective_query},
-        headers={
-            "Accept": "text/html,application/xhtml+xml",
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/128.0 Safari/537.36",
-        },
-        provider="duckduckgo",
-    )
-    if re.search(r"(?:anomaly-modal|If this persists, please|bots use DuckDuckGo)", html_text, re.I):
-        raise ToolError(
-            "RATE_LIMIT",
-            "DuckDuckGo HTML 触发频控",
-            retryable=True,
-            details={"provider": "duckduckgo"},
-            allow_fallback=True,
-        )
+    headers = {
+        "Accept": "text/html,application/xhtml+xml",
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/128.0 Safari/537.36",
+    }
+    results: list[dict[str, Any]] = []
+    last_err: ToolError | None = None
+    for endpoint in ("https://html.duckduckgo.com/html/", "https://lite.duckduckgo.com/lite/"):
+        try:
+            html_text = http_client.get_text(
+                endpoint,
+                params={"q": effective_query},
+                headers=headers,
+                provider="duckduckgo",
+            )
+        except ToolError as exc:
+            last_err = exc
+            continue
+        if re.search(r"(?:anomaly-modal|If this persists, please|bots use DuckDuckGo)", html_text, re.I):
+            last_err = ToolError(
+                "RATE_LIMIT",
+                "DuckDuckGo 触发频控",
+                retryable=True,
+                details={"provider": "duckduckgo", "endpoint": endpoint},
+                allow_fallback=True,
+            )
+            continue
+        results = parse_duckduckgo_html(html_text, limit=limit)
+        if results:
+            break
 
-    results = parse_duckduckgo_html(html_text, limit=limit)
+    if not results and last_err is not None:
+        raise last_err
+
     output = {"query": query, "results": results}
     cache.put(SLOT, "duckduckgo", cache_key, output)
     output["_cached"] = False

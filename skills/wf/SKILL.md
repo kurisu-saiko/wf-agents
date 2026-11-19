@@ -1,105 +1,70 @@
 ---
 name: wf
 description: >-
-  Run the evidence-first open-source discovery, codebase analysis, security/license audit,
-  and adoption planning workflow with two human confirmation gates and automatic config panel
-  lifecycle (opens once on first interaction, closes automatically when entering plan mode).
-  Use when the user invokes /wf or asks to evaluate, compare, audit, or adopt open-source
-  projects/libraries instead of reinventing the wheel.
+  Run the 6-step evidence-first Open-Source Reuse & Engineering Assembly Pipeline
+  (Discovery -> Audit -> 5-Way Strategy -> Local Adapter Contract -> Safe Assembly -> Verification/Rollback)
+  with explicit human confirmation gates and automatic config panel lifecycle.
+  Use when the user invokes /wf or asks to discover, evaluate, or assemble open-source projects into a local codebase.
 ---
 
-# WF：开源探索、项目分析与装配工作流
+# WF：人机协同的开源复用与工程组装流水线（Open-Source Reuse & Assembly Pipeline）
 
-核心目标：**用真实证据发现、评估并装配成熟的开源方案或现有库，避免盲目造轮子。**
+核心定位：**不止输出调研报告，而是以真实证据、合规审查、适配本地架构与安全回滚为基础，把网络上的优秀开源项目安全组装到本地仓库并跑通验证。**
 
-本技能兼容所有支持 MCP 或终端命令的 Agent（Antigravity、Claude Code、Cursor、Codex、Gemini CLI、OpenCode 等）：
-- **优先使用 MCP 工具**（`wf_start`、`wf_enter_plan`、`wf_enter_report`、`wf_*`）；
-- 若宿主未挂载 MCP，等价调用终端命令 `python "<WF_ROOT>/tools/wf_stage.py" ...`；
-- **增强而不捆绑**：将 `wf_*` 的结构化分析能力与宿主自身的只读工具（`read_file` / `Read` / `Grep` / `Glob` / `search_web` 等）结合使用。
+全流程拆解为“两条半链路”与 **6 个人类闸口（Gate 1 ~ Gate 6）**：
 
-## 面板与阶段硬规则
+```text
+[前半段：证据与决策引擎（只读）]
+1. 发现候选 ──► [Gate 1: 需求与选型确认] ──► 2. 合规与健康评估 ──► [Gate 2: 准入确认]
+──► 3. 5选1复用策略评估 ──► [Gate 3: 策略拍板]
+
+[后半段：本地工程组装闭环（受控写盘）]
+──► 4. 本地画像与对接契约 ──► [Gate 4: 契约评审] ──► [Gate 5: 分块 Diff 批准]
+──► 5. 检查点快照与安全落盘 ──► 6. 闭环验证 ──► [Gate 6: 验收归档或一键回滚]
+```
+
+## 铁律
 
 1. **配置面板生命周期（严格执行）**：
-   - **仅首次交互打开**：第 1 阶段调用一次 `wf_start`（或 `wf_stage.py init --task "..."`），在第一次交互时自动开启配置面板。
-   - **修正需求时不重开**：若用户在闸口 1 选择修改需求，**不要**再次调用 `wf_start` 或重新弹窗。
-   - **进入计划模式自动关闭**：一旦用户确认需求，进入计划/调研阶段前**必须立即调用 `wf_enter_plan`**（或 `wf_stage.py enter-plan`），自动关闭配置面板并解锁全部外部调研工具。
-2. **全程默认只读**：在用户未明确授权落盘/安装前，不修改工作区源码、不安装依赖、不部署服务。
-3. **无证据不下结论**：仓库链接、Star 数、许可证类别、CVE 漏洞、文件路径与行号必须来自实际工具返回。
+   - **仅首次交互打开**：启动时调用一次 `wf_start(task=..., openPanel=true)`。
+   - **修正需求不重开**：Gate 1 修改补充需求时**严禁**再次调用 `wf_start` 或重新弹窗。
+   - **过闸自动关闭**：一旦 Gate 1 获批，调用 `wf_gate_commit(gate="GATE_1", ...)` 或 `wf_enter_plan` 时自动关闭面板并解锁后续工具。
+2. **决不越闸写盘（Human-in-the-Loop）**：
+   - 未经用户批准 Gate 4 / Gate 5，绝对不向工作区写入源码或修改依赖配置；
+   - 每个重大决策均通过 `wf_gate_commit` 写入项目 `.wf/decisions/<sessionId>.json` 与 `ADR-<sessionId>.md`。
+3. **决策导向四问（Decision Brief）**：
+   - 每次给用户拍板的输出必须回答：是否命中需求？证据能否核验（URL/Commit/License/CVE/LOC）？局限与代价是否说清？可选动作是什么？
 
 ---
 
-## 阶段 1：能力校准与需求理解（`init`）
+## 第一步：初始化与本地画像（`init` -> Gate 1）
 
-1. 向用户简短说明“正在初始化 wf 并校准可用能力”。
-2. 调用 **`wf_start`**（传入 `task`，`openPanel: true`；或 CLI：`python "<WF_ROOT>/tools/wf_stage.py" init --task "<任务>"`）。
-   - 若用户未提供任务文本，只礼貌提示 `请告诉我你想调研或评估的任务，例如：/wf <任务描述>` 后结束本轮。
-   - 用 **1 句话**概括当前能力状态（哪些已就绪、哪些降级到零密钥兜底、配置面板是否已开启）；不要把原始 JSON 贴给用户。
-3. **快速理解本地语境（可选，仅当涉及当前项目时）**：
-   - 可调用 `wf_project_analyze` / `wf_structural_search` / `wf_repo_inspect(path=...)` 或宿主只读文件工具，快速识别当前项目技术栈、语言与架构约束。
-   - 此阶段**不要**开始搜索开源候选或输出技术方案。
-4. 输出结构紧凑、可直接验收的 **需求确认卡**（Markdown 列表，10–14 行以内）：
-   - **任务目标**：一句话概括要解决的问题
-   - **预期交付**：最终提供的对比、装配方案与风险报告
-   - **必须做到（Must）**：2–4 条可观察、可验收的行为或硬条件（如平台、语言、许可要求）
-   - **非目标（不做）**：本次明确排除的范围
-   - **验收标准**：如何判定方案可落地
-   - **默认假设与待确认**：信息不足时的合理假设
+1. 调用 `wf_start(task="<任务描述>", openPanel=true)`；用 1 句话概括当前可用能力与面板状态。
+2. 如当前处于本地工程仓库，调用 **`wf_local_profile(path=".")`** 与 `wf_project_analyze(path=".")`，识别本地主语言、包管理器、`src/flat` 布局、`adapterDir` 与测试探针（**保持只读**）。
+3. 紧凑呈现 **需求与本地约束卡**，使用交互确认工具请求 **Gate 1 确认**：
+   - 选项：`1. 确认需求并关闭面板，开始发现与评估候选` / `2. 修改或补充需求` / `3. 终止工作流`。
+   - 选 1 后调用 **`wf_gate_commit(projectPath=".", gate="GATE_1", status="approved", summary="...")`**，自动关闭面板并进入第二步。
 
-## 闸口 1：需求确认
+## 第二步：候选发现与合规/健康评估（Steps 1~2 -> Gate 2）
 
-调用宿主的交互确认工具（Antigravity `ask_question` / Claude Code `AskUserQuestion`；若不可用，输出清晰的 1/2/3 编号纯文本选项并停止本轮）：
+1. 并行调用：`wf_project_search`、`wf_web_search`、`wf_package_meta`、`wf_repo_inspect`、`wf_repo_health`、`wf_license_scan`、`wf_package_security`。
+2. 呈现横向对比矩阵（许可证分类、近 30/90 天维护健康度、已知 OSV CVE、契合度与局限），发起 **Gate 2 准入确认**：选定候选目标并批准法务/安全准入。
+3. 用户拍板后调用 **`wf_gate_commit(projectPath=".", gate="GATE_2", status="approved", selectedCandidate="...", evidence=[...])`**。
 
-- **问题**：`以上需求理解是否准确？确认后我将关闭配置面板并正式进入调研与方案设计。`
-- **选项**：
-  1. `确认需求，进入计划与调研`
-  2. `补充或修改需求`
-  3. `终止工作流`
+## 第三步：5 选 1 复用策略定案（Step 3 -> Gate 3）
 
-处理分支：
-- **选 2（补充/修改）**：结合用户补充更新需求卡，**不要**重开配置面板，重新发起闸口 1 确认。
-- **选 3（终止）**：调用 `wf_close`（关闭面板），告知用户已终止并结束。
-- **选 1（确认）**：**无需用户手动再敲 `/wf-plan`**，直接进入下方阶段 2！
+1. 调用 **`wf_strategy_evaluate(candidate=..., projectPath=".", intent=...)`**，从 5 种形态评估得分与代价：
+   - `PACKAGE_DEP`（包依赖安装）
+   - `CODE_SLICE`（代码切片最小 AST 闭包抽取）
+   - `VENDORING`（整库源码内嵌）
+   - `SIDECAR`（跨语言或隔离伴生服务）
+   - `PATTERN_REF`（净室模式参考重写）
+2. 结合返回的 `decision_brief` 向用户呈交 **Gate 3 策略选票**。用户拍板后调用 **`wf_gate_commit(gate="GATE_3", strategy="...", rationale="...")`**。
 
----
+## 第四步~第六步：对接契约、分块落盘与闭环验证（Steps 4~6）
 
-## 阶段 2：深度调研、分析与装配方案（`plan`）
-
-1. **立即调用 `wf_enter_plan`**（传入确认后的 `requirements`；或 CLI：`python "<WF_ROOT>/tools/wf_stage.py" enter-plan`）。
-   - 这一步会**自动关闭配置面板**并解锁所有外部调研能力。
-2. **多维度真实取证**（按任务需要组合调用，优先并行）：
-   - **候选发现**：`wf_project_search(action="search", ...)`、`wf_web_search(...)`、`wf_package_meta(action="search", ...)`；
-   - **深入读库**：`wf_repo_inspect(action="ingest" | "tree" | "read" | "readme", repo=...)`、`wf_project_search(action="search_code", ...)`、`wf_web_extract(url=...)`；
-   - **健康度与风险审计**：`wf_repo_health(repo=...)`、`wf_license_scan(repo=... / path=...)`、`wf_package_security(action="scan" | "query", ...)`、`wf_package_meta(action="lookup", ...)`；
-   - **本地契合度分析**：`wf_project_analyze(path=...)`、`wf_structural_search(action="symbols" | "search", path=...)` 或宿主原生只读工具。
-3. **输出方案对比与装配计划**：
-   - **候选对比表**（项目/包、链接、许可证与商用分类、维护活跃度、已知 CVE/风险、契合度、集成成本）
-   - **推荐方案与淘汰理由**（明确为什么选 A 不选 B）
-   - **可落地的装配步骤**（具体到依赖、模块衔接点、配置要点）
-   - **需要自写的薄适配边界**（控制在最小胶水层）
-   - **验证方式**（装完后如何验证通过）
-   - **需求对照表**（逐条对应阶段 1 的每项 Must：`覆盖` / `部分覆盖` / `未覆盖 + 缺口`）
-   - **未验证项与缺口**（坦诚列出未测到的部分）
-
-## 闸口 2：方案确认
-
-调用交互确认工具（或清晰纯文本选项并暂停）：
-- **问题**：`以上方案与需求对照是否确认？确认后将生成最终交付报告。`
-- **选项**：
-  1. `确认方案，生成最终报告`
-  2. `调整方案或补充对比`
-  3. `终止工作流`
-
-处理分支：
-- **选 2**：按用户意见补充调研并更新方案与对照表，再次确认。
-- **选 3**：调用 `wf_close`，告知已终止，结束。
-- **选 1**：直接进入阶段 3！
-
----
-
-## 阶段 3：最终交付报告（`report`）
-
-1. 调用 **`wf_enter_report`**（传入方案摘要；或 CLI：`python "<WF_ROOT>/tools/wf_stage.py" enter-report`），确保面板已关闭且状态归档。
-2. 基于已核实证据输出结构清晰、可直接执行的**最终调研与装配报告**（包含：任务摘要、候选对比、最终选型与理由、分步装配清单、薄适配点、安全与许可审计结论、验证清单、需求覆盖表、未验证项与缺口）。
-3. 末尾注明本次工作流为**只读分析（未改动工作区代码、未安装依赖）**，并自然提示下一步选项：
-   - 如需我直接按该方案开始实施改造，请回复确认；
-   - 或如需把本报告导出为 Markdown 文档，也可以直接告诉我路径。
+- 若用户选择**仅需只读评估报告/ADR**：调用 `wf_enter_report` 或 `/wf-report` 导出决策结论。
+- 若用户继续**工程组装落地**：按 `/wf-assemble`（`skills/wf-assemble/SKILL.md`）推进：
+  1. **Step 4（契约与切片计算）**：如选 `CODE_SLICE`，先调 `wf_slice_closure` 计算最小传递依赖闭包；再调 `wf_contract_design` 生成 Thin Adapter 隔离层、SPDX 头、`THIRD_PARTY_NOTICES.md`、`smoke_test` 与分块 unified diff（**Gate 4 / Gate 5 确认**）。
+  2. **Step 5（安全检查点与写盘）**：提交 `GATE_4` / `GATE_5` 后调用 `wf_assemble_apply`，自动在 `.wf/checkpoints/` 备份并在本仓库原子写入分块变更。
+  3. **Step 6（闭环验证或回滚）**：调用 `wf_verify_run` 运行语法编译与冒烟测试；发起 **Gate 6**，通过则 `wf_gate_commit(gate="GATE_6")`，不满意则调 `wf_checkpoint(action="rollback")` 一键恢复原状。

@@ -2,7 +2,7 @@
   "name": "wf-agents",
   "displayName": "WF Agents",
   "version": "2.0.0",
-  "description": "通用开源探索、仓库深度分析、依赖漏洞与许可证审计工作流插件（双人工闸口 + 智能配置面板生命周期）。",
+  "description": "开源复用与工程组装工作流插件（发现候选 → 合规/健康评估 → 5选1策略 → 本地对接契约 → 安全检查点组装 → 闭环验证与一键回滚）。",
   "author": {
     "name": "kurisu-saiko",
     "url": "https://github.com/kurisu-saiko/wf-agents"

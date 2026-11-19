@@ -93,6 +93,16 @@
         "checkedAt": { "type": "string" },
         "cached": { "type": "boolean" }
       }
+    },
+    "decision_brief": {
+      "type": "object",
+      "description": "决策导向摘要（反失控铁律 2：是否命中需求、证据能否核验、局限与代价、可选动作）。",
+      "properties": {
+        "requirement_fit": { "type": "string" },
+        "verifiable_evidence": { "type": "array", "items": { "type": "string" } },
+        "limitations_and_tradeoffs": { "type": "array", "items": { "type": "string" } },
+        "actionable_options": { "type": "array", "items": { "type": "object" } }
+      }
     }
   },
   "allOf": [

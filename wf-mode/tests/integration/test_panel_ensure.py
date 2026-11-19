@@ -1,21 +1,10 @@
 import importlib.util
 import json
-import shutil
 from pathlib import Path
 
 import pytest
 
 ROOT = Path(__file__).resolve().parents[2]
-
-
-@pytest.fixture(autouse=True)
-def fake_streamlit(tmp_path, monkeypatch):
-    """让 _panel_ensure 找到假的 streamlit，避免依赖本机 venv。"""
-    fake = tmp_path / "streamlit.exe"
-    fake.write_text("", encoding="utf-8")
-    monkeypatch.setattr(
-        shutil, "which", lambda name: str(fake) if name == "streamlit" else None
-    )
 
 
 def load_wf_tool():

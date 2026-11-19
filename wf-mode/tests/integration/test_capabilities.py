@@ -54,7 +54,7 @@ def test_doctor_reports_runtime_and_hosts(tmp_path, monkeypatch):
     data = wf.doctor()
     assert "runtime" in data
     assert data["runtime"]["binExists"] is True
-    assert {"antigravity", "claude", "cursor", "codex", "gemini", "haha", "dsh"}.issubset(
+    assert {"antigravity", "claude", "cursor", "codex", "gemini"}.issubset(
         set(data["hosts"])
     )
 

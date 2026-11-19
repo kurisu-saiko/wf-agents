@@ -1,17 +1,16 @@
 ---
 name: wf-report
 description: >-
-  Deliver Stage 3 (Final Read-Only Report) of the wf workflow based on confirmed requirements
-  and plan from context or wf_status, ensuring the configuration panel stays closed.
+  Export an Architecture Decision Record (ADR) or final read-only evaluation summary
+  based on .wf/decisions/ ledger and session evidence, keeping the config panel closed.
 ---
 
-# WF-Report：输出最终只读交付报告
+# WF-Report：导出决策报告与 ADR 归档
 
-当用户在分步模式下调用 `/wf-report` 时使用。
+当用户只需输出只读调研评估摘要，或在组装前后查看审计归档时使用。
 
 ## 执行步骤
 
-1. 调用 `wf_enter_report`（或 `python "<WF_ROOT>/tools/wf_stage.py" enter-report`），确保配置面板已关闭并读取会话记录；同时参考当前对话中已确认的需求卡、候选对比与方案。
-2. 若对话与会话记录中均无已确认方案，提示用户先运行 `/wf` 与 `/wf-plan`，不要凭空编造。
-3. 按清晰结构输出最终报告（任务摘要、候选对比、推荐选型与理由、分步装配步骤、薄适配边界、安全与许可审计结论、验证方式、需求覆盖表、未验证项与缺口）。
-4. 保持只读，末尾声明未修改工作区或安装依赖，并询问是否需要进一步实施或导出报告文件。
+1. 调用 `wf_enter_report` 与 `wf_status(projectPath=".")`，确保配置面板已关闭，并读取 `.wf/decisions/<sessionId>.json` 及已生成的 `ADR-<sessionId>.md` 审计轨迹。
+2. 基于已核验证据整理结构化报告（需求匹配、候选对比、合规/健康度结论、复用策略代价矩阵、本地对接契约与验证结果、未验证项与缺口）。
+3. 明确区分当前状态（**尚未写盘的只读报告** vs **已完成组装并通过 Gate 6 验收的 ADR 归档**），并附带检查点/回滚指引或下一步启动组装选项。

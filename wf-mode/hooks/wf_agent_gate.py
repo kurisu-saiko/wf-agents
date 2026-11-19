@@ -47,7 +47,7 @@ WRITE_CAPABILITIES = {
     "managed_platform",
 }
 READ_ONLY_COMMANDS = {"list", "health", "doctor"}
-STAGE_COMMANDS = {"init", "calibrate", "enter-plan", "enter-report", "close", "status"}
+STAGE_COMMANDS = {"init", "calibrate", "enter-plan", "enter-report", "close", "status", "gate-commit", "local-profile"}
 WRITE_TOOLS = {"Write", "Edit", "MultiEdit", "NotebookEdit", "write_file", "edit_file"}
 SHELL_TOOLS = {"Bash", "PowerShell", "run_command"}
 

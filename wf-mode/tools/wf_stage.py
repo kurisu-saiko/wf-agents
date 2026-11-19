@@ -6,7 +6,9 @@
   python tools/wf_stage.py enter-plan [--requirements "..."] [--session <id>]
   python tools/wf_stage.py enter-report [--summary "..."] [--session <id>]
   python tools/wf_stage.py close [--session <id>]
-  python tools/wf_stage.py status [--session <id>]
+  python tools/wf_stage.py status [--session <id>] [--project <dir>]
+  python tools/wf_stage.py gate-commit --gate <GATE_1..GATE_6> [--project <dir>] [--summary "..."] [--session <id>]
+  python tools/wf_stage.py local-profile [--path <dir>]
   python tools/wf_stage.py research <capability> <action> [--key value | --json "{...}"]
 
 面板生命周期规则：
@@ -28,7 +30,10 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
+from tools import ledger as wf_ledger  # noqa: E402
 from tools import session as wf_session  # noqa: E402
+from tools.assembly import profiler as wf_profiler  # noqa: E402
+from tools.errors import ToolError  # noqa: E402
 
 TOOL = ROOT / "tools" / "wf-tool.py"
 
@@ -251,18 +256,53 @@ def close_workflow(session_id: str | None = None) -> int:
     )
 
 
-def status_workflow(session_id: str | None = None) -> int:
+def status_workflow(session_id: str | None = None, project_path: str | None = None) -> int:
     sid = session_id or wf_session.default_session_id()
     panel_res = _run(["panel", "--status"])
     state = wf_session.load_session(sid)
-    return _emit(
-        {
-            "ok": True,
-            "session": state,
-            "panel": panel_res.get("data", {}),
-        },
-        0,
-    )
+    payload: dict[str, Any] = {
+        "ok": True,
+        "session": state,
+        "panel": panel_res.get("data", {}),
+    }
+    if project_path:
+        payload["ledger"] = wf_ledger.load_ledger(project_path, sid)
+    return _emit(payload, 0)
+
+
+def gate_commit(flags: dict[str, Any]) -> int:
+    gate = str(flags.get("gate") or "")
+    if not gate:
+        raise StageError("gate-commit 需要 --gate GATE_1..GATE_6")
+    status = str(flags.get("status") or "approved")
+    project_path = str(flags.get("project") or ".")
+    sid = str(flags.get("session") or "") or None
+    try:
+        res = wf_ledger.commit_gate(
+            project_path,
+            gate=gate,
+            status=status,
+            summary=str(flags.get("summary") or ""),
+            selected_candidate=str(flags.get("candidate") or ""),
+            strategy=str(flags.get("strategy") or ""),
+            rationale=str(flags.get("rationale") or ""),
+            checkpoint_id=str(flags.get("checkpoint") or ""),
+            session_id=sid,
+        )
+    except ToolError as exc:
+        raise StageError(exc.message) from exc
+    panel_data: dict[str, Any] = {}
+    if gate.strip().upper() == "GATE_1" and status.strip().lower() == "approved":
+        panel_data = _run(["panel", "--close"]).get("data", {})
+    return _emit({"ok": True, **res, **({"panel": panel_data} if panel_data else {})}, 0)
+
+
+def local_profile_cmd(path: str = ".") -> int:
+    try:
+        res = wf_profiler.profile_local_project(path)
+    except ToolError as exc:
+        raise StageError(exc.message) from exc
+    return _emit({"ok": True, **res}, 0)
 
 
 def research(args: list[str]) -> int:
@@ -321,7 +361,13 @@ def main(argv: list[str] | None = None) -> int:
             return close_workflow(session_id=flags.get("session"))
         if command == "status":
             flags = _parse_flags(args[1:])
-            return status_workflow(session_id=flags.get("session"))
+            return status_workflow(session_id=flags.get("session"), project_path=flags.get("project"))
+        if command == "gate-commit":
+            flags = _parse_flags(args[1:])
+            return gate_commit(flags)
+        if command == "local-profile":
+            flags = _parse_flags(args[1:])
+            return local_profile_cmd(str(flags.get("path") or "."))
         if command == "research":
             return research(args[1:])
         raise StageError(f"未知阶段命令: {command}")

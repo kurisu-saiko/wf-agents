@@ -24,7 +24,6 @@ from tools import config as wf_config  # noqa: E402
 from tools import session as wf_session  # noqa: E402
 
 TOOL = ROOT / "tools" / "wf-tool.py"
-AGENT = ROOT / "agent" / "wf-agent.md"
 _DEFAULT_STATE = ROOT / "panel" / "state.json"
 STATE = _DEFAULT_STATE
 CATALOG = ROOT / "capabilities.yaml"
@@ -271,36 +270,3 @@ def probe(capability: str) -> dict:
 
 def session_info() -> dict[str, Any]:
     return wf_session.load_session()
-
-
-def split_agent() -> tuple[str, str]:
-    text = AGENT.read_text(encoding="utf-8")
-    if text.startswith("---"):
-        parts = text.split("---", 2)
-        if len(parts) >= 3:
-            return parts[1].strip(), parts[2].lstrip("\n")
-    return "", text
-
-
-def agent_summary() -> dict:
-    frontmatter, body = split_agent()
-    tools = ""
-    hook = ""
-    for line in frontmatter.splitlines():
-        stripped = line.strip()
-        if stripped.startswith("tools:"):
-            tools = stripped.split(":", 1)[1].strip()
-        if "wf_agent_gate.py" in stripped:
-            hook = stripped
-    return {"frontmatter": frontmatter, "body": body, "tools": tools, "hook": hook}
-
-
-def save_agent_body(body: str) -> str:
-    frontmatter, _ = split_agent()
-    bdir = _backups_dir()
-    bdir.mkdir(parents=True, exist_ok=True)
-    stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
-    backup = bdir / f"wf-agent-{stamp}.md"
-    backup.write_text(AGENT.read_text(encoding="utf-8"), encoding="utf-8")
-    AGENT.write_text(f"---\n{frontmatter}\n---\n\n{body.rstrip()}\n", encoding="utf-8")
-    return str(backup)

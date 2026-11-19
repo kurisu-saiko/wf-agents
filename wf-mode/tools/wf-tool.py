@@ -48,7 +48,6 @@ PANEL_LOCK = _DEFAULT_PANEL_LOCK
 _DEFAULT_PANEL_LOG = ROOT / ".wf" / "logs" / "panel.log"
 PANEL_LOG = _DEFAULT_PANEL_LOG
 PANEL_SERVER = ROOT / "panel" / "server.py"
-PANEL_APP = ROOT / "panel" / "app.py"
 
 PANEL_BASE_PORT = 8765
 PANEL_PORT_SPAN = 30
@@ -603,7 +602,6 @@ def health(capability: str | None = None) -> dict[str, Any]:
 
 def _detect_hosts() -> dict[str, dict[str, Any]]:
     home = Path.home()
-    haha_path = local_config.resolve_haha_sidecar()
     agy_dir = home / ".gemini" / "antigravity"
     agy_cfg = home / ".gemini" / "config"
     agy_bin = shutil.which("agy") or ""
@@ -627,11 +625,6 @@ def _detect_hosts() -> dict[str, dict[str, Any]]:
         "gemini": {
             "detected": bool(shutil.which("gemini") or (home / ".gemini").is_dir()),
             "path": shutil.which("gemini") or (str(home / ".gemini") if (home / ".gemini").is_dir() else ""),
-        },
-        "haha": {"detected": bool(haha_path and Path(haha_path).is_file()), "path": haha_path},
-        "dsh": {
-            "detected": bool(shutil.which("dsh") or shutil.which("dsh-next")),
-            "path": shutil.which("dsh") or shutil.which("dsh-next") or "",
         },
     }
 
@@ -834,15 +827,6 @@ def _open_panel(url: str) -> bool:
 
 
 def _panel_backend() -> str:
-    env_val = os.environ.get("WF_PANEL_BACKEND", "").strip().lower()
-    if env_val in {"builtin", "streamlit"}:
-        return env_val
-    try:
-        cfg_val = str((local_config.load_config().get("panel") or {}).get("backend") or "").strip().lower()
-        if cfg_val in {"builtin", "streamlit"}:
-            return cfg_val
-    except local_config.ConfigError:
-        pass
     return "builtin"
 
 
@@ -909,39 +893,16 @@ def _panel_ensure(*, open_browser: bool = True, once: bool = False) -> dict[str,
         }
 
     token = secrets.token_urlsafe(24)
-    if backend == "streamlit":
-        streamlit = Path(runtime["venv"]) / "Scripts" / "streamlit.exe"
-        if not streamlit.is_file():
-            found = shutil.which("streamlit")
-            if not found:
-                backend = "builtin"
-            else:
-                streamlit = Path(found)
-        if backend == "streamlit":
-            cmd = [
-                str(streamlit),
-                "run",
-                str(PANEL_APP),
-                "--server.address",
-                "127.0.0.1",
-                "--server.headless",
-                "true",
-                "--server.port",
-                str(port),
-                "--browser.gatherUsageStats",
-                "false",
-            ]
-    if backend == "builtin":
-        cmd = [
-            sys.executable,
-            str(PANEL_SERVER),
-            "--host",
-            "127.0.0.1",
-            "--port",
-            str(port),
-            "--token",
-            token,
-        ]
+    cmd = [
+        sys.executable,
+        str(PANEL_SERVER),
+        "--host",
+        "127.0.0.1",
+        "--port",
+        str(port),
+        "--token",
+        token,
+    ]
 
     log_path = _panel_log_path()
     log_path.parent.mkdir(parents=True, exist_ok=True)
